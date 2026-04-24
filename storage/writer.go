@@ -7,14 +7,16 @@ import (
 const shardCount = 1024
 
 type Writer struct {
-	log     *DataLog
-	tracker *StreamTracker
+	log       *DataLog
+	tracker   *StreamTracker
+	streamIdx *StreamIndex
 }
 
-func NewWriter(tracker *StreamTracker, log *DataLog) *Writer {
+func NewWriter(tracker *StreamTracker, log *DataLog, streamIndex *StreamIndex) *Writer {
 	return &Writer{
-		log:     log,
-		tracker: tracker,
+		log:       log,
+		tracker:   tracker,
+		streamIdx: streamIndex,
 	}
 }
 
@@ -67,8 +69,29 @@ func (w *Writer) AppendToStream(evt *Event, expectedVersion uint64) (int64, erro
 		return 0, err
 	}
 
+	// Write to Stream Index
+	// If this fails, we are in a tricky spot, but for now we return error.
+	// TODO: implement index repair when this happens.
+	err = w.streamIdx.Append(h, evt.Position, uint64(offset))
+	if err != nil {
+		return 0, err
+	}
+
 	// Update the in-memory tracker
 	w.tracker.UpdateVersion(h, evt.Position)
 
 	return offset, nil
+}
+
+func (w *Writer) Close() error {
+	// Close the index shards first
+	idxErr := w.streamIdx.Close()
+
+	// Close the main data log
+	logErr := w.log.Close()
+
+	if idxErr != nil {
+		return idxErr
+	}
+	return logErr
 }

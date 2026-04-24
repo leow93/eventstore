@@ -22,17 +22,17 @@ Before you can index or cluster, you need a rock-solid, crash-safe way to write 
 ## Epic 2: Custom Indexing & Memory Management
 Building your from-scratch index files and the GC-optimized memory structures required for OCC.
 
-[ ] Task 2.1: GC-Friendly In-Memory Stream Tracker
+[-] Task 2.1: GC-Friendly In-Memory Stream Tracker
 
-[ ] Implement a fast string hashing function (e.g., xxHash) for stream names.
+[x] Implement a fast string hashing function (e.g., xxHash) for stream names.
 
-[ ] Create a map[uint64]uint64 (StreamHash -> MaxStreamPosition) to track the current tip of every stream without triggering Go's Garbage Collector.
+[x] Create a map[uint64]uint64 (StreamHash -> MaxStreamPosition) to track the current tip of every stream without triggering Go's Garbage Collector.
 
 [ ] Task 2.2: The On-Disk Stream Index
 
-[ ] Create an append-only stream.idx file.
+[x] Create an append-only stream.idx file.
 
-[ ] Implement writing fixed-width binary records (StreamHash, StreamPosition, DataLogOffset) to this file whenever an event is written to the Data Log.
+[x] Implement writing fixed-width binary records (StreamHash, StreamPosition, DataLogOffset) to this file whenever an event is written to the Data Log.
 
 [ ] Task 2.3: The On-Disk Category Index
 
