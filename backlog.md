@@ -5,9 +5,9 @@ Before you can index or cluster, you need a rock-solid, crash-safe way to write 
 
 [x] Task 1.1: Implement the Append-Only Data Log
 
-[ ] Open files using Go's os package with os.O_APPEND|os.O_CREATE|os.O_WRONLY.
+[x] Open files using Go's os package with os.O_APPEND|os.O_CREATE|os.O_WRONLY.
 
-[ ] Define the binary encoding format for an Event Record (Stream Name length, Stream Name, Event Type, Position, Timestamp, Payload length, Payload).
+[x] Define the binary encoding format for an Event Record (Stream Name length, Stream Name, Event Type, Position, Timestamp, Payload length, Payload).
 
 [ ] Task 1.2: Implement File Syncing & Durability
 
