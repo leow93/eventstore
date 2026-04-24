@@ -95,6 +95,7 @@ type DataLog struct {
 	file           *os.File
 	size           int64 // Tracks current file size to return offsets
 	globalPosition uint64
+	syncOnWrite    bool // Whether to sync to disk on each write. Always on, but an option for benchmarking.
 }
 
 func NewDataLog(filepath string) (*DataLog, error) {
@@ -115,9 +116,10 @@ func NewDataLog(filepath string) (*DataLog, error) {
 	}
 
 	return &DataLog{
-		mu:   sync.Mutex{},
-		file: file,
-		size: stat.Size(),
+		mu:          sync.Mutex{},
+		file:        file,
+		size:        stat.Size(),
+		syncOnWrite: true,
 	}, nil
 }
 
@@ -137,6 +139,12 @@ func (l *DataLog) Append(event *Event) (int64, error) {
 	n, err := l.file.Write(data)
 	if err != nil {
 		return 0, fmt.Errorf("failed to write event to data log: %w", err)
+	}
+
+	if l.syncOnWrite {
+		if err := l.file.Sync(); err != nil {
+			return 0, fmt.Errorf("failed to sync to disk: %w", err)
+		}
 	}
 
 	l.size += int64(n)

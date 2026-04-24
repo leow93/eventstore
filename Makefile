@@ -22,3 +22,8 @@ test:
 test-race:
 	@echo "==> Running tests with race detector..."
 	go test -v -race ./...
+
+## test-bench: Run benchmarking tests
+test-bench:
+	@echo "==> Running bench tests..."
+	go test -bench=. -benchmem ./...

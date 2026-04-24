@@ -9,9 +9,9 @@ Before you can index or cluster, you need a rock-solid, crash-safe way to write 
 
 [x] Define the binary encoding format for an Event Record (Stream Name length, Stream Name, Event Type, Position, Timestamp, Payload length, Payload).
 
-[ ] Task 1.2: Implement File Syncing & Durability
+[-] Task 1.2: Implement File Syncing & Durability
 
-[ ] Implement an fsync mechanism (via file.Sync()) to ensure OS buffers are flushed to physical disk.
+[x] Implement an fsync mechanism (via file.Sync()) to ensure OS buffers are flushed to physical disk.
 
 [ ] Add configuration for sync strategies (e.g., sync after every write vs. batch syncing every few milliseconds).
 
