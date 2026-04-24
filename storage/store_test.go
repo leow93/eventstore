@@ -10,6 +10,10 @@ import (
 // TestDataLog_Append verifies that events are correctly written to the physical file
 // and that the returned byte offsets are perfectly accurate.
 func TestDataLog_Append(t *testing.T) {
+	// Skip this test if the -short flag is provided
+	if testing.Short() {
+		t.Skip("Skipping disk I/O test in short mode")
+	}
 	// t.TempDir() creates a unique temporary directory that Go automatically deletes after the test.
 	tempDir := t.TempDir()
 	logPath := filepath.Join(tempDir, "test.log")
@@ -78,6 +82,10 @@ func TestDataLog_Append(t *testing.T) {
 // TestDataLog_ConcurrentAppend bombards the file with concurrent writes to ensure
 // the global mutex strictly sequences events without data corruption or skipped numbers.
 func TestDataLog_ConcurrentAppend(t *testing.T) {
+	// Skip this test if the -short flag is provided
+	if testing.Short() {
+		t.Skip("Skipping concurrent disk I/O test in short mode")
+	}
 	tempDir := t.TempDir()
 	logPath := filepath.Join(tempDir, "concurrent.log")
 

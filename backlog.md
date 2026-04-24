@@ -15,9 +15,9 @@ Before you can index or cluster, you need a rock-solid, crash-safe way to write 
 
 [ ] Add configuration for sync strategies (e.g., sync after every write vs. batch syncing every few milliseconds).
 
-[ ] Task 1.3: Implement Memory-Mapped Reads (mmap)
+[x] Task 1.3: Implement Memory-Mapped Reads (mmap)
 
-[ ] Use syscall.Mmap to map the Data Log directly into the Go process address space as a []byte for zero-copy, highly performant reads.
+[x] Use syscall.Mmap to map the Data Log directly into the Go process address space as a []byte for zero-copy, highly performant reads.
 
 ## Epic 2: Custom Indexing & Memory Management
 Building your from-scratch index files and the GC-optimized memory structures required for OCC.

@@ -1,6 +1,9 @@
 package storage
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"errors"
+)
 
 // Event represents the logical structure of our event data.
 type Event struct {
@@ -80,4 +83,51 @@ func (e *Event) Encode() []byte {
 	copy(buf[offset:], e.Meta)
 
 	return buf
+}
+
+var (
+	ErrDataTooShortForTotalLen      = errors.New("length of data too small for total length")
+	ErrDataSliceSmallerThanTotalLen = errors.New("data slice smaller than encoded total length")
+)
+
+func Decode(data []byte) (*Event, error) {
+	if len(data) < 4 {
+		return nil, ErrDataTooShortForTotalLen
+	}
+	totalLen := binary.LittleEndian.Uint32(data[0:4])
+	if len(data) < int(4+totalLen) {
+		return nil, ErrDataSliceSmallerThanTotalLen
+	}
+	evt := &Event{}
+	offset := 4
+
+	streamNameLen := binary.LittleEndian.Uint16(data[offset : offset+2])
+	offset += 2
+	evt.StreamName = string(data[offset : offset+int(streamNameLen)])
+	offset += int(streamNameLen)
+
+	eventTypeLen := binary.LittleEndian.Uint16(data[offset : offset+2])
+	offset += 2
+	evt.EventType = string(data[offset : offset+int(eventTypeLen)])
+	offset += int(eventTypeLen)
+
+	evt.Position = binary.LittleEndian.Uint64(data[offset : offset+8])
+	offset += 8
+	evt.GlobalPosition = binary.LittleEndian.Uint64(data[offset : offset+8])
+	offset += 8
+	evt.Timestamp = binary.LittleEndian.Uint64(data[offset : offset+8])
+	offset += 8
+
+	payloadLen := binary.LittleEndian.Uint32(data[offset : offset+4])
+	offset += 4
+	evt.Payload = make([]byte, payloadLen)
+	copy(evt.Payload, data[offset:offset+int(payloadLen)])
+	offset += int(payloadLen)
+
+	metaLen := binary.LittleEndian.Uint32(data[offset : offset+4])
+	offset += 4
+	evt.Meta = make([]byte, metaLen)
+	copy(evt.Meta, data[offset:offset+int(metaLen)])
+
+	return evt, nil
 }

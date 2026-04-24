@@ -20,8 +20,8 @@ type DataLog struct {
 func NewDataLog(filepath string) (*DataLog, error) {
 	// os.O_APPEND: Force all writes to the end of the file
 	// os.O_CREATE: Create the file if it doesn't exist
-	// os.O_WRONLY: We are only writing through this descriptor (mmap will handle reads later)
-	flags := os.O_APPEND | os.O_CREATE | os.O_WRONLY
+	// os.O_RDWR: We are reading and writing through this descriptor (mmap for reads)
+	flags := os.O_APPEND | os.O_CREATE | os.O_RDWR
 
 	file, err := os.OpenFile(filepath, flags, 0o644)
 	if err != nil {

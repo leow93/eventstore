@@ -1,6 +1,6 @@
-.PHONY: all fmt vet test test-race
+.PHONY: all fmt vet test test-full test-race test-full-race bench
 
-# The default target runs when you just type 'make'
+# The default target runs the FAST tests
 all: fmt vet test-race
 
 ## fmt: Format all Go code
@@ -13,17 +13,32 @@ vet:
 	@echo "==> Running go vet..."
 	go vet ./...
 
-## test: Run standard unit tests
+## mod-tidy: Run go mod tidy 
+mod-tidy:
+	@echo "==> Running go mod tidy..."
+	go mod tidy
+
+## test: Run FAST unit tests (skips disk I/O)
 test:
-	@echo "==> Running tests..."
+	@echo "==> Running fast tests..."
+	go test -short -v ./...
+
+## test-full: Run ALL tests (including slow disk I/O)
+test-full:
+	@echo "==> Running all tests..."
 	go test -v ./...
 
-## test-race: Run unit tests with the race detector enabled
+## test-race: Run FAST tests with the race detector
 test-race:
-	@echo "==> Running tests with race detector..."
+	@echo "==> Running fast tests with race detector..."
+	go test -short -v -race ./...
+
+## test-full-race: Run ALL tests with the race detector
+test-full-race:
+	@echo "==> Running all tests with race detector..."
 	go test -v -race ./...
 
-## test-bench: Run benchmarking tests
-test-bench:
-	@echo "==> Running bench tests..."
+## bench: Run all benchmarks with memory allocation statistics
+bench:
+	@echo "==> Running benchmarks..."
 	go test -bench=. -benchmem ./...

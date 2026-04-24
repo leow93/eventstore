@@ -3,6 +3,9 @@ package storage
 import (
 	"encoding/binary"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestEvent_Encode(t *testing.T) {
@@ -82,5 +85,73 @@ func TestEvent_Encode(t *testing.T) {
 	meta := data[offset : offset+int(metaLen)]
 	if string(meta) != string(evt.Meta) {
 		t.Fatalf("expected meta %s, got %s", string(evt.Meta), string(meta))
+	}
+}
+
+func TestEvent_Decode(t *testing.T) {
+	validEvt := &Event{
+		StreamName: "test-stream",
+		EventType:  "TestFired",
+		Payload:    []byte(`{"data": 1}`),
+		Meta:       []byte(`{"actor": "user"}`),
+	}
+	validData := validEvt.Encode()
+	tests := []struct {
+		name          string
+		makeData      func() []byte
+		expectedError error
+		result        *Event
+	}{
+		{
+			name: "data with length of 0 cannot be decoded",
+			makeData: func() []byte {
+				return []byte{}
+			},
+			expectedError: ErrDataTooShortForTotalLen,
+			result:        nil,
+		},
+		{
+			name: "data with length of 3 cannot be decoded",
+			makeData: func() []byte {
+				return validData[0:3]
+			},
+			expectedError: ErrDataTooShortForTotalLen,
+			result:        nil,
+		},
+		{
+			name: "data with length less than total length cannot be decoded",
+			makeData: func() []byte {
+				return validData[:len(validData)-1] // chop off the last byte
+			},
+			expectedError: ErrDataSliceSmallerThanTotalLen,
+			result:        nil,
+		},
+		{
+			name: "data with half the total",
+			makeData: func() []byte {
+				return validData[:len(validData)/2] // chop in half
+			},
+			expectedError: ErrDataSliceSmallerThanTotalLen,
+			result:        nil,
+		},
+		{
+			name: "decodes the event as expected",
+			makeData: func() []byte {
+				return validData
+			},
+
+			expectedError: nil,
+			result:        validEvt,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			ev, err := Decode(test.makeData())
+			require.Equal(t, test.expectedError, err)
+			assert.Equal(t, test.result, ev)
+		})
 	}
 }
