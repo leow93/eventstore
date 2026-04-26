@@ -7,16 +7,18 @@ import (
 const shardCount = 1024
 
 type Writer struct {
-	log       *DataLog
-	tracker   *StreamTracker
-	streamIdx *StreamIndex
+	log           *DataLog
+	tracker       *StreamTracker
+	streamIdx     *StreamIndex
+	categoryIndex *CategoryIndex
 }
 
-func NewWriter(tracker *StreamTracker, log *DataLog, streamIndex *StreamIndex) *Writer {
+func NewWriter(tracker *StreamTracker, log *DataLog, streamIndex *StreamIndex, categoryIndex *CategoryIndex) *Writer {
 	return &Writer{
-		log:       log,
-		tracker:   tracker,
-		streamIdx: streamIndex,
+		log:           log,
+		tracker:       tracker,
+		streamIdx:     streamIndex,
+		categoryIndex: categoryIndex,
 	}
 }
 
@@ -39,6 +41,10 @@ func (e ErrWrongExpectedVersion) Error() string {
 }
 
 func (w *Writer) AppendToStream(evt *Event, expectedVersion uint64) (int64, error) {
+	category, err := GetCategory(evt.StreamName)
+	if err != nil {
+		return 0, err
+	}
 	h := w.tracker.GetHash(evt.StreamName)
 	lock := w.tracker.GetLock(h)
 	lock.Lock()
@@ -69,6 +75,9 @@ func (w *Writer) AppendToStream(evt *Event, expectedVersion uint64) (int64, erro
 		return 0, err
 	}
 
+	// Update the in-memory tracker
+	w.tracker.UpdateVersion(h, evt.Position)
+
 	// Write to Stream Index
 	// If this fails, we are in a tricky spot, but for now we return error.
 	// TODO: implement index repair when this happens.
@@ -77,8 +86,13 @@ func (w *Writer) AppendToStream(evt *Event, expectedVersion uint64) (int64, erro
 		return 0, err
 	}
 
-	// Update the in-memory tracker
-	w.tracker.UpdateVersion(h, evt.Position)
+	// Write to the category index
+	// If this fails, we are in a tricky spot, but for now we return error.
+	// TODO: implement index repair when this happens.
+	err = w.categoryIndex.Append(category, uint64(offset))
+	if err != nil {
+		return 0, err
+	}
 
 	return offset, nil
 }

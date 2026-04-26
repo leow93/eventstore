@@ -34,13 +34,13 @@ Building your from-scratch index files and the GC-optimized memory structures re
 
 [x] Implement writing fixed-width binary records (StreamHash, StreamPosition, DataLogOffset) to this file whenever an event is written to the Data Log.
 
-[ ] Task 2.3: The On-Disk Category Index
+[x] Task 2.3: The On-Disk Category Index
 
-[ ] Implement category extraction (parsing the prefix before the dash in category-id).
+[x] Implement category extraction (parsing the prefix before the dash in category-id).
 
-[ ] Create an append-only category.idx file.
+[x] Create an append-only category.idx file.
 
-[ ] Implement writing fixed-width binary records (CategoryHash, GlobalPosition, DataLogOffset).
+[x] Implement writing fixed-width binary records (CategoryHash, GlobalPosition, DataLogOffset).
 
 [ ] Task 2.4: Crash Recovery & Snapshots
 

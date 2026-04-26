@@ -32,8 +32,12 @@ func TestWriter_AppendToStream_OCC(t *testing.T) {
 	sIdx, err := NewShardedStreamIndex(sIdxPath)
 	require.NoError(t, err)
 
+	cIndexPath := fmt.Sprintf("%s/categoryidx", tempDir)
+	cIndex, err := NewCategoryIndex(cIndexPath)
+	require.NoError(t, err)
+
 	tracker := NewStreamTracker()
-	writer := NewWriter(tracker, log, sIdx)
+	writer := NewWriter(tracker, log, sIdx, cIndex)
 
 	streamName := "account-123"
 
@@ -76,8 +80,12 @@ func TestWriter_ConcurrentStreamContention(t *testing.T) {
 	sIdx, err := NewShardedStreamIndex(sIdxPath)
 	require.NoError(t, err)
 
+	cIndexPath := fmt.Sprintf("%s/categoryidx", tempDir)
+	cIndex, err := NewCategoryIndex(cIndexPath)
+	require.NoError(t, err)
+
 	tracker := NewStreamTracker()
-	writer := NewWriter(tracker, log, sIdx)
+	writer := NewWriter(tracker, log, sIdx, cIndex)
 
 	streamName := "hot-stream"
 	const increments = 100
@@ -130,6 +138,7 @@ func TestWriter_RecoveryFromIndex(t *testing.T) {
 	tempDir := t.TempDir()
 	logPath := filepath.Join(tempDir, "data.log")
 	indexPath := filepath.Join(tempDir, "streamidx")
+	cIndexPath := filepath.Join(tempDir, "catidx")
 
 	// 1. Initial Start: Write some data
 	log, err := newFastDataLog(logPath)
@@ -138,11 +147,15 @@ func TestWriter_RecoveryFromIndex(t *testing.T) {
 	idx, err := NewShardedStreamIndex(indexPath)
 	require.NoError(t, err)
 
+	cIdx, err := NewCategoryIndex(cIndexPath)
+	require.NoError(t, err)
+
 	tracker := NewStreamTracker()
 	writer := &Writer{
-		tracker:   tracker,
-		log:       log,
-		streamIdx: idx,
+		tracker:       tracker,
+		log:           log,
+		streamIdx:     idx,
+		categoryIndex: cIdx,
 	}
 
 	streamID := "user-99"
@@ -200,11 +213,15 @@ func TestWriter_FullLifecycle(t *testing.T) {
 	log, err := newFastDataLog(logPath)
 	require.NoError(t, err)
 
-	idx, err := NewShardedStreamIndex(indexPath)
+	sIdx, err := NewShardedStreamIndex(indexPath)
+	require.NoError(t, err)
+
+	cIndexPath := fmt.Sprintf("%s/categoryidx", tempDir)
+	cIndex, err := NewCategoryIndex(cIndexPath)
 	require.NoError(t, err)
 
 	tracker := NewStreamTracker()
-	writer := NewWriter(tracker, log, idx)
+	writer := NewWriter(tracker, log, sIdx, cIndex)
 	defer writer.Close()
 
 	streamName := "inventory-sh1"
@@ -241,9 +258,14 @@ func TestWriter_ParallelShardThroughput(t *testing.T) {
 	indexPath := filepath.Join(tempDir, "bench_shards")
 
 	log, _ := newFastDataLog(logPath)
-	idx, _ := NewShardedStreamIndex(indexPath)
+	sIdx, _ := NewShardedStreamIndex(indexPath)
+
+	cIndexPath := fmt.Sprintf("%s/categoryidx", tempDir)
+	cIndex, err := NewCategoryIndex(cIndexPath)
+	require.NoError(t, err)
+
 	tracker := NewStreamTracker()
-	writer := NewWriter(tracker, log, idx)
+	writer := NewWriter(tracker, log, sIdx, cIndex)
 	defer writer.Close()
 
 	var wg sync.WaitGroup

@@ -14,7 +14,7 @@ import (
 // 8 bytes: Stream Position (uint64)
 // 8 bytes: Data Log Offset (uint64) — This allows us to find the event on disk later.
 
-const IndexEntrySize = 24
+const streamIndexEntrySize = 24
 
 type StreamIndex struct {
 	basePath string
@@ -48,7 +48,7 @@ func (si *StreamIndex) Append(h uint64, pos, offset uint64) error {
 	si.locks[shardIdx].Lock()
 	defer si.locks[shardIdx].Unlock()
 
-	buf := make([]byte, IndexEntrySize)
+	buf := make([]byte, streamIndexEntrySize)
 	binary.LittleEndian.PutUint64(buf[0:8], h)
 	binary.LittleEndian.PutUint64(buf[8:16], pos)
 	binary.LittleEndian.PutUint64(buf[16:24], offset)
@@ -57,6 +57,7 @@ func (si *StreamIndex) Append(h uint64, pos, offset uint64) error {
 		return err
 	}
 
+	// Until we have ability to replay the log to build the index, we just sync to disk.
 	return si.files[shardIdx].Sync()
 }
 
@@ -79,7 +80,7 @@ func (si *StreamIndex) Load(handler RecoveryHandler) error {
 				return
 			}
 
-			buf := make([]byte, IndexEntrySize)
+			buf := make([]byte, streamIndexEntrySize)
 			for {
 				_, err := f.Read(buf)
 				if err != nil {

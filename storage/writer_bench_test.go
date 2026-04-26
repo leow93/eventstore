@@ -21,8 +21,10 @@ func BenchmarkWriter_AppendToStream(b *testing.B) {
 		// DataLog with syncOnWrite = true
 		log, _ := NewDataLog(logPath)
 		idx, _ := NewShardedStreamIndex(idxPath)
+		cIndexPath := fmt.Sprintf("%s/categoryidx", tempDir)
+		cIndex, _ := NewCategoryIndex(cIndexPath)
 		tracker := NewStreamTracker()
-		writer := NewWriter(tracker, log, idx)
+		writer := NewWriter(tracker, log, idx, cIndex)
 		defer writer.Close()
 
 		b.ResetTimer()
@@ -45,7 +47,10 @@ func BenchmarkWriter_AppendToStream(b *testing.B) {
 
 		idx, _ := NewShardedStreamIndex(idxPath)
 		tracker := NewStreamTracker()
-		writer := NewWriter(tracker, log, idx)
+
+		cIndexPath := fmt.Sprintf("%s/categoryidx", tempDir)
+		cIndex, _ := NewCategoryIndex(cIndexPath)
+		writer := NewWriter(tracker, log, idx, cIndex)
 		defer writer.Close()
 
 		b.ResetTimer()
@@ -66,9 +71,12 @@ func BenchmarkWriter_AppendParallel_MultiStream_SyncDisabled(b *testing.B) {
 	// We'll test with sync disabled to see the maximum
 	// throughput of the locking and indexing logic.
 	log, _ := newFastDataLog(logPath)
-	idx, _ := NewShardedStreamIndex(indexPath)
+	sIdx, _ := NewShardedStreamIndex(indexPath)
+	cIndexPath := fmt.Sprintf("%s/categoryidx", tempDir)
+	cIndex, _ := NewCategoryIndex(cIndexPath)
+
 	tracker := NewStreamTracker()
-	writer := NewWriter(tracker, log, idx)
+	writer := NewWriter(tracker, log, sIdx, cIndex)
 	defer writer.Close()
 
 	b.ResetTimer()
@@ -101,9 +109,11 @@ func BenchmarkWriter_AppendParallel_MultiStream_SyncEnabled(b *testing.B) {
 	indexPath := filepath.Join(tempDir, "parallel_shards")
 
 	log, _ := NewDataLog(logPath)
-	idx, _ := NewShardedStreamIndex(indexPath)
+	sIdx, _ := NewShardedStreamIndex(indexPath)
+	cIndexPath := fmt.Sprintf("%s/categoryidx", tempDir)
+	cIndex, _ := NewCategoryIndex(cIndexPath)
 	tracker := NewStreamTracker()
-	writer := NewWriter(tracker, log, idx)
+	writer := NewWriter(tracker, log, sIdx, cIndex)
 	defer writer.Close()
 
 	b.ResetTimer()
