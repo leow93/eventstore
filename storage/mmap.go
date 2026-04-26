@@ -48,13 +48,13 @@ func (r *MmapReader) ReadAt(offset int64) (*Event, error) {
 	}
 
 	// Read the first 4 bytes to find out how long this event is
-	if offset+4 > r.size {
+	if offset > r.size {
 		return nil, fmt.Errorf("incomplete record at offset %d", offset)
 	}
 	totalLen := binary.LittleEndian.Uint32(r.data[offset : offset+4])
 
 	// Slice out the exact bytes for this event (zero-copy slice!)
-	endOffset := offset + 4 + int64(totalLen)
+	endOffset := offset + int64(totalLen)
 	if endOffset > r.size {
 		return nil, fmt.Errorf("event extends beyond mapped file size")
 	}

@@ -27,6 +27,7 @@ type Event struct {
 // EventTypeLength (uint16 - 2 bytes)
 // EventType (Variable bytes)
 // Position (uint64 - 8 bytes)
+// GlobalPosition (uint64 - 8 bytes)
 // Timestamp (uint64 - 8 bytes)
 // PayloadLength (uint32 - 4 bytes)
 // Payload (Variable bytes)
@@ -38,12 +39,11 @@ func (e *Event) Encode() []byte {
 	payloadLen := uint32(len(e.Payload))
 	metaLen := uint32(len(e.Meta))
 
-	// Calculate total length (excluding the 4 bytes for TotalLength itself)
-	// 2 (StreamNameLen) + len(StreamName) + 2 (EventTypeLen) + len(EventType) + 8 (Position) + 8 (GlobalPosition) + 8 (Timestamp) + 4 (PayloadLen) + len(Payload) + 4 (MetaLen)+ len(Meta)
-	totalLen := 2 + len(e.StreamName) + 2 + len(e.EventType) + 8 + 8 + 8 + 4 + len(e.Payload) + 4 + len(e.Meta)
+	// Calculate total length (including the 4 bytes for TotalLength itself)
+	// 4 (TotalLength) + 2 (StreamNameLen) + len(StreamName) + 2 (EventTypeLen) + len(EventType) + 8 (Position) + 8 (GlobalPosition) + 8 (Timestamp) + 4 (PayloadLen) + len(Payload) + 4 (MetaLen)+ len(Meta)
+	totalLen := 4 + 2 + len(e.StreamName) + 2 + len(e.EventType) + 8 + 8 + 8 + 4 + len(e.Payload) + 4 + len(e.Meta)
 
-	// Allocate exact buffer size: 4 (TotalLength) + totalLen
-	buf := make([]byte, 4+totalLen)
+	buf := make([]byte, totalLen)
 
 	offset := 0
 
@@ -85,6 +85,13 @@ func (e *Event) Encode() []byte {
 	return buf
 }
 
+// TotalLength returns the size of the event in bytes.
+// There are 36 bytes for known-size fields, and an unknown number which we must
+// calculate for varying fields
+func (e *Event) TotalSize() uint32 {
+	return uint32(40 + len(e.StreamName) + len(e.EventType) + len(e.Payload) + len(e.Meta))
+}
+
 var (
 	ErrDataTooShortForTotalLen      = errors.New("length of data too small for total length")
 	ErrDataSliceSmallerThanTotalLen = errors.New("data slice smaller than encoded total length")
@@ -95,7 +102,7 @@ func Decode(data []byte) (*Event, error) {
 		return nil, ErrDataTooShortForTotalLen
 	}
 	totalLen := binary.LittleEndian.Uint32(data[0:4])
-	if len(data) < int(4+totalLen) {
+	if len(data) < int(totalLen) {
 		return nil, ErrDataSliceSmallerThanTotalLen
 	}
 	evt := &Event{}

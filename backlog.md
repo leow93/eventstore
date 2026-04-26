@@ -42,9 +42,9 @@ Building your from-scratch index files and the GC-optimized memory structures re
 
 [x] Implement writing fixed-width binary records (CategoryHash, GlobalPosition, DataLogOffset).
 
-[ ] Task 2.4: Crash Recovery & Snapshots
+[x] Task 2.4: Crash Recovery & Snapshots
 
-[ ] Implement a boot sequence that scans stream.idx to rebuild the in-memory map[uint64]uint64.
+[x] Implement a boot sequence that scans stream.idx to rebuild the in-memory map[uint64]uint64.
 
 [ ] (Optional) Implement periodic index snapshots (snapshot.bin) so the system doesn't have to scan the entire index file on boot.
 

@@ -1,10 +1,14 @@
 package storage
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestDataLog_Append verifies that events are correctly written to the physical file
@@ -138,4 +142,59 @@ func TestDataLog_ConcurrentAppend(t *testing.T) {
 	if stat.Size() == 0 {
 		t.Fatal("expected file to have data, but size is 0")
 	}
+}
+
+func TestDataLog_ReadAt(t *testing.T) {
+	tempDir := t.TempDir()
+	logPath := filepath.Join(tempDir, "data.log")
+
+	log, err := newFastDataLog(logPath)
+	require.NoError(t, err)
+	defer log.Close()
+
+	// 1. Standard Event (Fits in 1KB optimistic read)
+	stdEvt := &Event{
+		StreamName: "user-123",
+		EventType:  "UserCreated",
+		Payload:    []byte(`{"name": "Alice"}`),
+		Meta:       []byte(`{"ip": "127.0.0.1"}`),
+	}
+
+	offset1, err := log.Append(stdEvt)
+	require.NoError(t, err)
+
+	// 2. Large Event (Forces the > 1KB slow-path read)
+	largePayload := bytes.Repeat([]byte("A"), 1500) // 1.5KB payload
+	largeEvt := &Event{
+		StreamName: "user-123",
+		EventType:  "LargeDataAdded",
+		Payload:    largePayload,
+		Meta:       []byte{}, // Empty meta
+	}
+
+	offset2, err := log.Append(largeEvt)
+	require.NoError(t, err)
+
+	// --- Verify Standard Event ---
+	readEvt1, err := log.ReadAt(offset1)
+	require.NoError(t, err)
+
+	assert.Equal(t, stdEvt.StreamName, readEvt1.StreamName)
+	assert.Equal(t, stdEvt.EventType, readEvt1.EventType)
+	assert.Equal(t, stdEvt.Position, readEvt1.Position)
+	assert.Equal(t, stdEvt.Timestamp, readEvt1.Timestamp)
+	assert.Equal(t, stdEvt.Payload, readEvt1.Payload)
+	assert.Equal(t, stdEvt.Meta, readEvt1.Meta)
+
+	// Verify TotalSize calculation is perfectly symmetrical
+	// (offset2 - offset1 should exactly equal the total size of evt1)
+	assert.Equal(t, uint32(offset2-offset1), readEvt1.TotalSize())
+
+	// --- Verify Large Event ---
+	readEvt2, err := log.ReadAt(offset2)
+	require.NoError(t, err)
+
+	assert.Equal(t, largeEvt.StreamName, readEvt2.StreamName)
+	assert.Equal(t, largeEvt.EventType, readEvt2.EventType)
+	assert.Len(t, readEvt2.Payload, 1500)
 }

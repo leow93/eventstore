@@ -23,7 +23,7 @@ func TestEvent_Encode(t *testing.T) {
 
 	// Verify Total Length
 	totalLen := binary.LittleEndian.Uint32(data[0:4])
-	expectedTotalLen := uint32(len(data) - 4)
+	expectedTotalLen := uint32(len(data))
 	if totalLen != expectedTotalLen {
 		t.Fatalf("expected total length %d, got %d", expectedTotalLen, totalLen)
 	}
