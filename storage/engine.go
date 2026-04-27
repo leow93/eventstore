@@ -6,15 +6,15 @@ import (
 
 const shardCount = 1024
 
-type Writer struct {
+type Engine struct {
 	log           *DataLog
 	tracker       *StreamTracker
 	streamIdx     *StreamIndex
 	categoryIndex *CategoryIndex
 }
 
-func NewWriter(tracker *StreamTracker, log *DataLog, streamIndex *StreamIndex, categoryIndex *CategoryIndex) *Writer {
-	w := &Writer{
+func NewEngine(tracker *StreamTracker, log *DataLog, streamIndex *StreamIndex, categoryIndex *CategoryIndex) *Engine {
+	w := &Engine{
 		log:           log,
 		tracker:       tracker,
 		streamIdx:     streamIndex,
@@ -50,17 +50,17 @@ func (e *FatalError) Error() string {
 	return fmt.Sprintf("FATAL INDEX FAILURE: %v", e.Err)
 }
 
-func (w *Writer) AppendToStream(evt *Event, expectedVersion uint64) (int64, error) {
+func (e *Engine) AppendToStream(evt *Event, expectedVersion uint64) (int64, error) {
 	category, err := GetCategory(evt.StreamName)
 	if err != nil {
 		return 0, err
 	}
-	h := w.tracker.GetHash(evt.StreamName)
-	lock := w.tracker.GetLock(h)
+	h := e.tracker.GetHash(evt.StreamName)
+	lock := e.tracker.GetLock(h)
 	lock.Lock()
 	defer lock.Unlock()
 
-	currentVersion, exists := w.tracker.GetCurrentVersion(h)
+	currentVersion, exists := e.tracker.GetCurrentVersion(h)
 
 	// OCC Logic:
 	// If the user expects 0, but the stream exists, it's a conflict.
@@ -80,18 +80,18 @@ func (w *Writer) AppendToStream(evt *Event, expectedVersion uint64) (int64, erro
 	evt.Position = currentVersion + 1
 
 	// Append to the physical log (The log has its own internal lock for global ordering)
-	offset, err := w.log.Append(evt)
+	offset, err := e.log.Append(evt)
 	if err != nil {
 		return 0, err
 	}
 
 	// Update the in-memory tracker
-	w.tracker.UpdateVersion(h, evt.Position)
+	e.tracker.UpdateVersion(h, evt.Position)
 
 	// Write to Stream Index
 	// For now if this fails, we return a fatal error so that the client can crash the process and restart it.
 	// TOCONSIDER: signal that index needs rebuilding and rebuild in the background to allow for better availability.
-	err = w.streamIdx.Append(h, evt.Position, uint64(offset))
+	err = e.streamIdx.Append(h, evt.Position, uint64(offset))
 	if err != nil {
 		return 0, &FatalError{err}
 	}
@@ -99,7 +99,7 @@ func (w *Writer) AppendToStream(evt *Event, expectedVersion uint64) (int64, erro
 	// Write to the category index
 	// For now if this fails, we return a fatal error so that the client can crash the process and restart it.
 	// TOCONSIDER: signal that index needs rebuilding and rebuild in the background to allow for better availability.
-	err = w.categoryIndex.Append(category, uint64(offset))
+	err = e.categoryIndex.Append(category, uint64(offset))
 	if err != nil {
 		return 0, err
 	}
@@ -108,11 +108,11 @@ func (w *Writer) AppendToStream(evt *Event, expectedVersion uint64) (int64, erro
 }
 
 // ReadStream fetches a slice of events for a given stream
-func (w *Writer) ReadStream(streamName string, fromPos uint64, limit int) ([]*Event, error) {
-	h := w.tracker.GetHash(streamName)
+func (e *Engine) ReadStream(streamName string, fromPos uint64, limit int) ([]*Event, error) {
+	h := e.tracker.GetHash(streamName)
 
 	// 1. Get physical locations from the index
-	offsets, err := w.streamIdx.GetOffsetsForStream(h, fromPos, limit)
+	offsets, err := e.streamIdx.GetOffsetsForStream(h, fromPos, limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch offsets from index: %w", err)
 	}
@@ -120,7 +120,7 @@ func (w *Writer) ReadStream(streamName string, fromPos uint64, limit int) ([]*Ev
 	// 2. Fetch the physical events from the DataLog
 	events := make([]*Event, 0, len(offsets))
 	for _, off := range offsets {
-		evt, err := w.log.ReadAt(int64(off))
+		evt, err := e.log.ReadAt(int64(off))
 		if err != nil {
 			return nil, fmt.Errorf("failed to read event at offset %d: %w", off, err)
 		}
@@ -130,12 +130,12 @@ func (w *Writer) ReadStream(streamName string, fromPos uint64, limit int) ([]*Ev
 	return events, nil
 }
 
-func (w *Writer) Close() error {
+func (e *Engine) Close() error {
 	// Close the index shards first
-	idxErr := w.streamIdx.Close()
+	idxErr := e.streamIdx.Close()
 
 	// Close the main data log
-	logErr := w.log.Close()
+	logErr := e.log.Close()
 
 	if idxErr != nil {
 		return idxErr

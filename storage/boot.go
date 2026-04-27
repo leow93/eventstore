@@ -14,7 +14,7 @@ type Config struct {
 	CategoryIndexPath string
 }
 
-func Boot(_ context.Context, cfg Config) (*Writer, error) {
+func Boot(_ context.Context, cfg Config) (*Engine, error) {
 	directories := []string{
 		filepath.Dir(cfg.LogPath),
 		cfg.StreamIndexPath,
@@ -91,7 +91,7 @@ func Boot(_ context.Context, cfg Config) (*Writer, error) {
 	}
 
 	// 3. Assemble the Writer
-	writer := NewWriter(tracker, dataLog, streamIdx, catIdx)
+	writer := NewEngine(tracker, dataLog, streamIdx, catIdx)
 
 	// 4. Run the Tail-Scan Recovery
 	finalGlobalPos, err := runTailScan(writer, int64(lowestMax), startingGlobalPos)
@@ -105,7 +105,7 @@ func Boot(_ context.Context, cfg Config) (*Writer, error) {
 	return writer, nil
 }
 
-func runTailScan(w *Writer, maxIndexedOffset int64, currentGlobalPos uint64) (uint64, error) {
+func runTailScan(w *Engine, maxIndexedOffset int64, currentGlobalPos uint64) (uint64, error) {
 	logSize := w.log.Size()
 	if logSize == 0 {
 		return 0, nil // Brand new database

@@ -24,7 +24,7 @@ func BenchmarkWriter_AppendToStream(b *testing.B) {
 		cIndexPath := fmt.Sprintf("%s/categoryidx", tempDir)
 		cIndex, _ := NewCategoryIndex(cIndexPath)
 		tracker := NewStreamTracker()
-		writer := NewWriter(tracker, log, idx, cIndex)
+		writer := NewEngine(tracker, log, idx, cIndex)
 		defer writer.Close()
 
 		b.ResetTimer()
@@ -50,7 +50,7 @@ func BenchmarkWriter_AppendToStream(b *testing.B) {
 
 		cIndexPath := fmt.Sprintf("%s/categoryidx", tempDir)
 		cIndex, _ := NewCategoryIndex(cIndexPath)
-		writer := NewWriter(tracker, log, idx, cIndex)
+		writer := NewEngine(tracker, log, idx, cIndex)
 		defer writer.Close()
 
 		b.ResetTimer()
@@ -76,7 +76,7 @@ func BenchmarkWriter_AppendParallel_MultiStream_SyncDisabled(b *testing.B) {
 	cIndex, _ := NewCategoryIndex(cIndexPath)
 
 	tracker := NewStreamTracker()
-	writer := NewWriter(tracker, log, sIdx, cIndex)
+	writer := NewEngine(tracker, log, sIdx, cIndex)
 	defer writer.Close()
 
 	b.ResetTimer()
@@ -113,7 +113,7 @@ func BenchmarkWriter_AppendParallel_MultiStream_SyncEnabled(b *testing.B) {
 	cIndexPath := fmt.Sprintf("%s/categoryidx", tempDir)
 	cIndex, _ := NewCategoryIndex(cIndexPath)
 	tracker := NewStreamTracker()
-	writer := NewWriter(tracker, log, sIdx, cIndex)
+	writer := NewEngine(tracker, log, sIdx, cIndex)
 	defer writer.Close()
 
 	b.ResetTimer()

@@ -22,7 +22,7 @@ func TestBootSequence_TailScanRecovery(t *testing.T) {
 	sIdx, _ := NewShardedStreamIndex(streamIdxPath)
 	cIdx, _ := NewCategoryIndex(catIdxPath)
 	tracker := NewStreamTracker()
-	writer := NewWriter(tracker, log, sIdx, cIdx)
+	writer := NewEngine(tracker, log, sIdx, cIdx)
 
 	validEvt := &Event{
 		StreamName: "order-99",

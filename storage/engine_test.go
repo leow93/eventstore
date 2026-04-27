@@ -37,7 +37,7 @@ func TestWriter_AppendToStream_OCC(t *testing.T) {
 	require.NoError(t, err)
 
 	tracker := NewStreamTracker()
-	writer := NewWriter(tracker, log, sIdx, cIndex)
+	writer := NewEngine(tracker, log, sIdx, cIndex)
 
 	streamName := "account-123"
 
@@ -85,7 +85,7 @@ func TestWriter_ConcurrentStreamContention(t *testing.T) {
 	require.NoError(t, err)
 
 	tracker := NewStreamTracker()
-	writer := NewWriter(tracker, log, sIdx, cIndex)
+	writer := NewEngine(tracker, log, sIdx, cIndex)
 
 	streamName := "hot-stream"
 	const increments = 100
@@ -151,7 +151,7 @@ func TestWriter_RecoveryFromIndex(t *testing.T) {
 	require.NoError(t, err)
 
 	tracker := NewStreamTracker()
-	writer := &Writer{
+	writer := &Engine{
 		tracker:       tracker,
 		log:           log,
 		streamIdx:     idx,
@@ -193,7 +193,7 @@ func TestWriter_RecoveryFromIndex(t *testing.T) {
 
 	// 5. Verify OCC still works after recovery
 	newLog, _ := newFastDataLog(logPath)
-	newWriter := &Writer{
+	newWriter := &Engine{
 		tracker:   newTracker,
 		log:       newLog,
 		streamIdx: newIdx,
@@ -221,7 +221,7 @@ func TestWriter_FullLifecycle(t *testing.T) {
 	require.NoError(t, err)
 
 	tracker := NewStreamTracker()
-	writer := NewWriter(tracker, log, sIdx, cIndex)
+	writer := NewEngine(tracker, log, sIdx, cIndex)
 	defer writer.Close()
 
 	streamName := "inventory-sh1"
@@ -265,7 +265,7 @@ func TestWriter_ParallelShardThroughput(t *testing.T) {
 	require.NoError(t, err)
 
 	tracker := NewStreamTracker()
-	writer := NewWriter(tracker, log, sIdx, cIndex)
+	writer := NewEngine(tracker, log, sIdx, cIndex)
 	defer writer.Close()
 
 	var wg sync.WaitGroup
@@ -318,7 +318,7 @@ func TestReadStream_Deduplication(t *testing.T) {
 	require.NoError(t, err)
 
 	tracker := NewStreamTracker()
-	writer := NewWriter(tracker, log, sIdx, cIndex)
+	writer := NewEngine(tracker, log, sIdx, cIndex)
 	defer writer.Close()
 	// Write an event normally
 	evt := &Event{StreamName: "cart-1", EventType: "ItemAdded", Payload: []byte("A")}

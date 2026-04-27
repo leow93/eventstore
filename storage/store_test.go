@@ -131,7 +131,7 @@ func TestDataLog_ConcurrentAppend(t *testing.T) {
 
 	// Verify the final Global Position exactly matches the total number of events written
 	if log.globalPosition.Load() != uint64(totalExpectedEvents) {
-		t.Fatalf("expected final global position to be %d, got %d", totalExpectedEvents, log.globalPosition)
+		t.Fatalf("expected final global position to be %d, got %d", totalExpectedEvents, log.globalPosition.Load())
 	}
 
 	// Verify the file actually has data and didn't just increment the counter in memory
