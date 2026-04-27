@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -79,6 +80,46 @@ func (l *DataLog) Append(event *Event) (int64, error) {
 	l.size += int64(n)
 
 	return writeOffset, nil
+}
+
+// AppendBatch writes multiple events in a single locked operation and syncs ONCE.
+func (l *DataLog) AppendBatch(events []*Event) ([]int64, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	offsets := make([]int64, len(events))
+	var buf bytes.Buffer // Pre-allocate a buffer for the entire batch
+
+	for i, evt := range events {
+		// Assign global position atomically as we process the batch
+		evt.GlobalPosition = l.globalPosition.Add(1)
+		if evt.Timestamp == 0 {
+			evt.Timestamp = uint64(time.Now().UnixNano())
+		}
+
+		data := evt.Encode()
+
+		// The event's offset is the current file size + whatever is already in the buffer
+		offsets[i] = l.size + int64(buf.Len())
+		buf.Write(data)
+	}
+
+	// 1. One massive write to the OS
+	n, err := l.file.Write(buf.Bytes())
+	if err != nil {
+		return nil, fmt.Errorf("failed to write batch to data log: %w", err)
+	}
+
+	// 2. ONE single sync for the entire batch
+	if l.syncOnWrite {
+		if err := l.file.Sync(); err != nil {
+			return nil, fmt.Errorf("failed to sync batch to disk: %w", err)
+		}
+	}
+
+	l.size += int64(n)
+
+	return offsets, nil
 }
 
 const optimisticReadSize = 1024
