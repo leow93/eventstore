@@ -304,3 +304,46 @@ func TestWriter_ParallelShardThroughput(t *testing.T) {
 		assert.Equal(t, uint64(eventsPerWorker), ver)
 	}
 }
+
+func TestReadStream_Deduplication(t *testing.T) {
+	tempDir := t.TempDir()
+	logPath := filepath.Join(tempDir, "bench.log")
+	indexPath := filepath.Join(tempDir, "bench_shards")
+
+	log, _ := newFastDataLog(logPath)
+	sIdx, _ := NewShardedStreamIndex(indexPath)
+
+	cIndexPath := fmt.Sprintf("%s/categoryidx", tempDir)
+	cIndex, err := NewCategoryIndex(cIndexPath)
+	require.NoError(t, err)
+
+	tracker := NewStreamTracker()
+	writer := NewWriter(tracker, log, sIdx, cIndex)
+	defer writer.Close()
+	// Write an event normally
+	evt := &Event{StreamName: "cart-1", EventType: "ItemAdded", Payload: []byte("A")}
+	_, err = writer.AppendToStream(evt, 0)
+	require.NoError(t, err)
+
+	// Simulate a duplicate index write (e.g. from a messy tail-scan recovery)
+	// We reach directly into the index and write Position 1 again, pointing to the same offset
+	h := writer.tracker.GetHash("cart-1")
+	err = writer.streamIdx.Append(h, 1, 0) // Writing Pos 1 again
+	require.NoError(t, err)
+
+	// Write a second event normally
+	evt2 := &Event{StreamName: "cart-1", EventType: "ItemRemoved", Payload: []byte("B")}
+	_, err = writer.AppendToStream(evt2, 1)
+	require.NoError(t, err)
+
+	// READ THE STREAM
+	events, err := writer.ReadStream("cart-1", 0, 100)
+	require.NoError(t, err)
+
+	// We should only get 2 events back, not 3. The duplicate Pos 1 should be ignored.
+	require.Len(t, events, 2)
+	assert.Equal(t, uint64(1), events[0].Position)
+	assert.Equal(t, []byte("A"), events[0].Payload)
+	assert.Equal(t, uint64(2), events[1].Position)
+	assert.Equal(t, []byte("B"), events[1].Payload)
+}

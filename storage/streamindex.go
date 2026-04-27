@@ -106,6 +106,54 @@ func (si *StreamIndex) Load(handler RecoveryHandler) error {
 	return nil
 }
 
+// GetOffsetsForStream scans the index shard and returns up to 'limit' offsets.
+// If limit is 0, it returns all offsets from the given position.
+func (si *StreamIndex) GetOffsetsForStream(hash uint64, fromPos uint64, limit int) ([]uint64, error) {
+	shardIdx := hash % uint64(shardCount)
+
+	si.locks[shardIdx].Lock()
+	defer si.locks[shardIdx].Unlock()
+
+	f := si.files[shardIdx]
+
+	// Reset file pointer to the beginning for the scan
+	if _, err := f.Seek(0, 0); err != nil {
+		return nil, err
+	}
+
+	seen := make(map[uint64]struct{})
+	var offsets []uint64
+	buf := make([]byte, 24) // 8(Hash) + 8(Position) + 8(Offset)
+
+	for {
+		if limit > 0 && len(offsets) >= limit {
+			break
+		}
+
+		n, err := f.Read(buf)
+		if n < 24 {
+			break // EOF or partial read at the tail
+		}
+		if err != nil {
+			break
+		}
+
+		entryHash := binary.LittleEndian.Uint64(buf[0:8])
+		entryPos := binary.LittleEndian.Uint64(buf[8:16])
+		entryOff := binary.LittleEndian.Uint64(buf[16:24])
+
+		if entryHash == hash && entryPos >= fromPos {
+			if _, ok := seen[entryOff]; ok {
+				continue
+			}
+			seen[entryOff] = struct{}{}
+			offsets = append(offsets, entryOff)
+		}
+	}
+
+	return offsets, nil
+}
+
 // Close gracefully shuts down all shard files.
 func (si *StreamIndex) Close() error {
 	var firstErr error

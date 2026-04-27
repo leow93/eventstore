@@ -130,7 +130,7 @@ func TestDataLog_ConcurrentAppend(t *testing.T) {
 	wg.Wait()
 
 	// Verify the final Global Position exactly matches the total number of events written
-	if log.globalPosition != uint64(totalExpectedEvents) {
+	if log.globalPosition.Load() != uint64(totalExpectedEvents) {
 		t.Fatalf("expected final global position to be %d, got %d", totalExpectedEvents, log.globalPosition)
 	}
 
@@ -142,6 +142,33 @@ func TestDataLog_ConcurrentAppend(t *testing.T) {
 	if stat.Size() == 0 {
 		t.Fatal("expected file to have data, but size is 0")
 	}
+}
+
+func TestDataLog_GlobalPosition(t *testing.T) {
+	tempDir := t.TempDir()
+	logPath := filepath.Join(tempDir, "data.log")
+
+	dataLog, err := newFastDataLog(logPath)
+	require.NoError(t, err)
+
+	// Seed position to 100
+	dataLog.SetGlobalPosition(100)
+
+	evt1 := &Event{StreamName: "a", EventType: "T1"}
+	evt2 := &Event{StreamName: "b", EventType: "T2"}
+
+	// Note: AppendBatch expects GlobalPosition to be assigned internally by the log
+	_, err = dataLog.Append(evt1)
+	require.NoError(t, err)
+	_, err = dataLog.Append(evt2)
+	require.NoError(t, err)
+
+	// Verify the log correctly assigned sequential positions
+	assert.Equal(t, uint64(101), evt1.GlobalPosition)
+	assert.Equal(t, uint64(102), evt2.GlobalPosition)
+
+	// Verify the atomic counter has the correct max
+	assert.Equal(t, uint64(102), dataLog.globalPosition.Load())
 }
 
 func TestDataLog_ReadAt(t *testing.T) {

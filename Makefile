@@ -42,3 +42,9 @@ test-full-race:
 bench:
 	@echo "==> Running benchmarks..."
 	go test -bench=. -benchmem ./...
+
+## clean-local-data: removes local data
+clean-local-data:
+	@echo "==> Removing local data"
+	rm -rf data
+	mkdir data
