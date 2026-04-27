@@ -17,6 +17,9 @@ type DataLog struct {
 	size           int64 // Tracks current file size to return offsets
 	globalPosition atomic.Uint64
 	syncOnWrite    bool // Whether to sync to disk on each write. Always on, but an option for benchmarking.
+
+	// Reusable batch buffer to prevent GC allocations
+	batchBuf []byte
 }
 
 func NewDataLog(filepath string) (*DataLog, error) {
@@ -79,6 +82,57 @@ func (l *DataLog) Append(event *Event) (int64, error) {
 	l.size += int64(n)
 
 	return writeOffset, nil
+}
+
+// AppendBatch writes multiple events in a single locked operation and syncs ONCE.
+func (l *DataLog) AppendBatch(events []*Event) ([]int64, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	// 1. Calculate required capacity
+	var totalBatchSize uint32 = 0
+	for _, evt := range events {
+		totalBatchSize += evt.TotalSize()
+	}
+
+	// 2. Grow reusable byte buffer if necessary (with a x2 buffer to prevent frequent resizing)
+	if uint32(cap(l.batchBuf)) < totalBatchSize {
+		l.batchBuf = make([]byte, totalBatchSize*2)
+	}
+	l.batchBuf = l.batchBuf[:totalBatchSize]
+
+	// 3. ALLOCATE LOCALLY: This is 1 allocation per *batch*, which is effectively zero overhead.
+	offsets := make([]int64, len(events))
+
+	// 4. Serialize zero-alloc
+	offset := 0
+	for i, evt := range events {
+		evt.GlobalPosition = l.globalPosition.Add(1)
+		if evt.Timestamp == 0 {
+			evt.Timestamp = uint64(time.Now().UnixNano())
+		}
+
+		offsets[i] = l.size + int64(offset)
+
+		evtSize := int(evt.TotalSize())
+		evt.EncodeInto(l.batchBuf[offset : offset+evtSize])
+		offset += evtSize
+	}
+
+	// 5. Write and Sync once
+	n, err := l.file.Write(l.batchBuf)
+	if err != nil {
+		return nil, fmt.Errorf("failed to write batch: %w", err)
+	}
+	if l.syncOnWrite {
+		if err := l.file.Sync(); err != nil {
+			return nil, fmt.Errorf("failed to sync batch: %w", err)
+		}
+	}
+
+	l.size += int64(n)
+
+	return offsets, nil
 }
 
 const optimisticReadSize = 1024

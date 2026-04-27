@@ -24,13 +24,13 @@ func BenchmarkWriter_AppendToStream(b *testing.B) {
 		cIndexPath := fmt.Sprintf("%s/categoryidx", tempDir)
 		cIndex, _ := NewCategoryIndex(cIndexPath)
 		tracker := NewStreamTracker()
-		writer := NewEngine(tracker, log, idx, cIndex)
-		defer writer.Close()
+		engine := NewEngine(tracker, log, idx, cIndex)
+		defer engine.Close()
 
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			// We increment the expected version to simulate a real stream growth
-			_, err := writer.AppendToStream(evt, uint64(i))
+			_, err := engine.AppendToStream(evt, uint64(i))
 			if err != nil {
 				b.Fatalf("append failed: %v", err)
 			}
@@ -50,12 +50,12 @@ func BenchmarkWriter_AppendToStream(b *testing.B) {
 
 		cIndexPath := fmt.Sprintf("%s/categoryidx", tempDir)
 		cIndex, _ := NewCategoryIndex(cIndexPath)
-		writer := NewEngine(tracker, log, idx, cIndex)
-		defer writer.Close()
+		engine := NewEngine(tracker, log, idx, cIndex)
+		defer engine.Close()
 
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_, err := writer.AppendToStream(evt, uint64(i))
+			_, err := engine.AppendToStream(evt, uint64(i))
 			if err != nil {
 				b.Fatalf("append failed: %v", err)
 			}
@@ -76,8 +76,8 @@ func BenchmarkWriter_AppendParallel_MultiStream_SyncDisabled(b *testing.B) {
 	cIndex, _ := NewCategoryIndex(cIndexPath)
 
 	tracker := NewStreamTracker()
-	writer := NewEngine(tracker, log, sIdx, cIndex)
-	defer writer.Close()
+	engine := NewEngine(tracker, log, sIdx, cIndex)
+	defer engine.Close()
 
 	b.ResetTimer()
 
@@ -97,7 +97,7 @@ func BenchmarkWriter_AppendParallel_MultiStream_SyncDisabled(b *testing.B) {
 			// though in a real scenario you'd track the version.
 			// To keep it simple, we ignore the error since the first
 			// write per stream per goroutine will succeed.
-			writer.AppendToStream(evt, 0)
+			engine.AppendToStream(evt, 0)
 			i++
 		}
 	})
@@ -113,8 +113,8 @@ func BenchmarkWriter_AppendParallel_MultiStream_SyncEnabled(b *testing.B) {
 	cIndexPath := fmt.Sprintf("%s/categoryidx", tempDir)
 	cIndex, _ := NewCategoryIndex(cIndexPath)
 	tracker := NewStreamTracker()
-	writer := NewEngine(tracker, log, sIdx, cIndex)
-	defer writer.Close()
+	engine := NewEngine(tracker, log, sIdx, cIndex)
+	defer engine.Close()
 
 	b.ResetTimer()
 
@@ -134,7 +134,7 @@ func BenchmarkWriter_AppendParallel_MultiStream_SyncEnabled(b *testing.B) {
 			// though in a real scenario you'd track the version.
 			// To keep it simple, we ignore the error since the first
 			// write per stream per goroutine will succeed.
-			writer.AppendToStream(evt, 0)
+			engine.AppendToStream(evt, 0)
 			i++
 		}
 	})
