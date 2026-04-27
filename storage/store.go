@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -18,6 +17,9 @@ type DataLog struct {
 	size           int64 // Tracks current file size to return offsets
 	globalPosition atomic.Uint64
 	syncOnWrite    bool // Whether to sync to disk on each write. Always on, but an option for benchmarking.
+
+	// Reusable batch buffer to prevent GC allocations
+	batchBuf []byte
 }
 
 func NewDataLog(filepath string) (*DataLog, error) {
@@ -87,33 +89,44 @@ func (l *DataLog) AppendBatch(events []*Event) ([]int64, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	offsets := make([]int64, len(events))
-	var buf bytes.Buffer // Pre-allocate a buffer for the entire batch
+	// 1. Calculate required capacity
+	var totalBatchSize uint32 = 0
+	for _, evt := range events {
+		totalBatchSize += evt.TotalSize()
+	}
 
+	// 2. Grow reusable byte buffer if necessary (with a x2 buffer to prevent frequent resizing)
+	if uint32(cap(l.batchBuf)) < totalBatchSize {
+		l.batchBuf = make([]byte, totalBatchSize*2)
+	}
+	l.batchBuf = l.batchBuf[:totalBatchSize]
+
+	// 3. ALLOCATE LOCALLY: This is 1 allocation per *batch*, which is effectively zero overhead.
+	offsets := make([]int64, len(events))
+
+	// 4. Serialize zero-alloc
+	offset := 0
 	for i, evt := range events {
-		// Assign global position atomically as we process the batch
 		evt.GlobalPosition = l.globalPosition.Add(1)
 		if evt.Timestamp == 0 {
 			evt.Timestamp = uint64(time.Now().UnixNano())
 		}
 
-		data := evt.Encode()
+		offsets[i] = l.size + int64(offset)
 
-		// The event's offset is the current file size + whatever is already in the buffer
-		offsets[i] = l.size + int64(buf.Len())
-		buf.Write(data)
+		evtSize := int(evt.TotalSize())
+		evt.EncodeInto(l.batchBuf[offset : offset+evtSize])
+		offset += evtSize
 	}
 
-	// 1. One massive write to the OS
-	n, err := l.file.Write(buf.Bytes())
+	// 5. Write and Sync once
+	n, err := l.file.Write(l.batchBuf)
 	if err != nil {
-		return nil, fmt.Errorf("failed to write batch to data log: %w", err)
+		return nil, fmt.Errorf("failed to write batch: %w", err)
 	}
-
-	// 2. ONE single sync for the entire batch
 	if l.syncOnWrite {
 		if err := l.file.Sync(); err != nil {
-			return nil, fmt.Errorf("failed to sync batch to disk: %w", err)
+			return nil, fmt.Errorf("failed to sync batch: %w", err)
 		}
 	}
 

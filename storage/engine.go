@@ -14,7 +14,15 @@ type CommitRequest struct {
 	ExpectedVersion uint64
 	Offset          int64
 	Err             error
-	Done            chan struct{} // Used to block the caller until the batch finishes
+	Result          chan error
+}
+
+var reqPool = sync.Pool{
+	New: func() any {
+		return &CommitRequest{
+			Result: make(chan error, 1), // Pre-allocated once forever
+		}
+	},
 }
 
 type Engine struct {
@@ -78,44 +86,42 @@ func (e *FatalError) Error() string {
 }
 
 func (e *Engine) AppendToStream(evt *Event, expectedVersion uint64) (int64, error) {
-	// Instantly reject if the engine has crashed
 	if err := e.haltError.Load(); err != nil {
 		return 0, err.(error)
 	}
+	// Grab a pooled request
+	req := reqPool.Get().(*CommitRequest)
+	req.Event = evt
+	req.ExpectedVersion = expectedVersion
+	req.Offset = 0
+	req.Err = nil // <-- MUST clear this so old errors don't bleed over	// Protect against queue closing
 
-	// Safely enqueue, protecting against the queue closing mid-send
 	e.stateMu.RLock()
 	if e.closed {
 		e.stateMu.RUnlock()
+		reqPool.Put(req) // Return to pool
 		return 0, fmt.Errorf("engine is shutting down")
-	}
-
-	req := &CommitRequest{
-		Event:           evt,
-		ExpectedVersion: expectedVersion,
-		Done:            make(chan struct{}),
 	}
 
 	select {
 	case e.commitQueue <- req:
-		// Queued successfully
 	default:
-		// Queue is full
 		e.stateMu.RUnlock()
-		if err := e.haltError.Load(); err != nil {
-			return 0, err.(error)
-		}
-		return 0, fmt.Errorf("engine overloaded: commit queue is full")
+		reqPool.Put(req)
+		return 0, fmt.Errorf("engine overloaded")
 	}
 	e.stateMu.RUnlock()
 
-	// 3. Wait for the background processor to commit the batch
-	<-req.Done
+	// Wait for processing
+	err := <-req.Result
 
-	if req.Err != nil {
-		return 0, req.Err
-	}
-	return req.Offset, nil
+	offset := req.Offset
+
+	// Release back to pool safely
+	req.Event = nil
+	reqPool.Put(req)
+
+	return offset, err
 }
 
 // ReadStream fetches a slice of events for a given stream
@@ -168,7 +174,7 @@ func (e *Engine) batchProcessor() {
 		for _, r := range batch {
 			_, err := GetCategory(r.Event.StreamName)
 			if err != nil {
-				r.Err = err
+				r.Result <- err
 				continue
 			}
 			h := e.tracker.GetHash(r.Event.StreamName)
@@ -179,11 +185,11 @@ func (e *Engine) batchProcessor() {
 
 			// OCC Checks
 			if r.ExpectedVersion == 0 && exists {
-				r.Err = ErrStreamAlreadyExists{r.Event.StreamName}
+				r.Err = ErrStreamAlreadyExists{r.Event.StreamName} // Set state, do not send!
 				lock.Unlock()
 				continue
 			}
-			// If the user expects a specific version, but it doesn't match the tip.
+
 			if r.ExpectedVersion > 0 && currentVersion != r.ExpectedVersion {
 				r.Err = ErrWrongExpectedVersion{
 					stream:   r.Event.StreamName,
@@ -234,7 +240,7 @@ func (e *Engine) batchProcessor() {
 
 		// 5. Wake up the waiting callers
 		for _, r := range batch {
-			close(r.Done)
+			r.Result <- r.Err
 		}
 
 		// Clear the slice for the next iteration without dropping capacity
@@ -247,15 +253,24 @@ func (e *Engine) halt(err error, currentBatch []*CommitRequest) {
 	fatalErr := fmt.Errorf("FATAL ENGINE FAILURE: %w", err)
 	e.haltError.Store(fatalErr)
 
-	// Wake up and fail the current batch
+	// 1. Wake up and fail the requests currently being processed
 	for _, r := range currentBatch {
-		r.Err = fatalErr
-		close(r.Done)
+		r.Result <- fatalErr
 	}
 
-	// Any requests already sitting in the commitQueue (or added immediately after)
-	// will just hang if we don't clear them, but we'll handle that gracefully
-	// in AppendToStream below.
+	// 2. Lock the state to prevent AppendToStream from pushing new requests
+	e.stateMu.Lock()
+	if !e.closed {
+		e.closed = true
+		// Closing the channel ensures the range loop below will eventually terminate
+		close(e.commitQueue)
+	}
+	e.stateMu.Unlock()
+
+	// 3. Drain and reject everything else that was already stuck in the queue
+	for r := range e.commitQueue {
+		r.Result <- fatalErr
+	}
 }
 
 func (e *Engine) Close() error {

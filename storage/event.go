@@ -85,6 +85,54 @@ func (e *Event) Encode() []byte {
 	return buf
 }
 
+// EncodeInto writes the event directly into the provided slice.
+// It assumes the slice is already at least evt.TotalSize() long.
+func (e *Event) EncodeInto(buf []byte) {
+	streamNameLen := uint16(len(e.StreamName))
+	eventTypeLen := uint16(len(e.EventType))
+	payloadLen := uint32(len(e.Payload))
+	metaLen := uint32(len(e.Meta))
+
+	totalLen := e.TotalSize() // Use your existing inclusive TotalSize() method
+
+	offset := 0
+
+	// 1. Total Length
+	binary.LittleEndian.PutUint32(buf[offset:], totalLen)
+	offset += 4
+
+	// 2. Stream Name
+	binary.LittleEndian.PutUint16(buf[offset:], streamNameLen)
+	offset += 2
+	copy(buf[offset:], e.StreamName)
+	offset += int(streamNameLen)
+
+	// 3. Event Type
+	binary.LittleEndian.PutUint16(buf[offset:], eventTypeLen)
+	offset += 2
+	copy(buf[offset:], e.EventType)
+	offset += int(eventTypeLen)
+
+	// 4. Positions & Timestamps
+	binary.LittleEndian.PutUint64(buf[offset:], e.Position)
+	offset += 8
+	binary.LittleEndian.PutUint64(buf[offset:], e.GlobalPosition)
+	offset += 8
+	binary.LittleEndian.PutUint64(buf[offset:], e.Timestamp)
+	offset += 8
+
+	// 5. Payload
+	binary.LittleEndian.PutUint32(buf[offset:], payloadLen)
+	offset += 4
+	copy(buf[offset:], e.Payload)
+	offset += int(payloadLen)
+
+	// 6. Meta
+	binary.LittleEndian.PutUint32(buf[offset:], metaLen)
+	offset += 4
+	copy(buf[offset:], e.Meta)
+}
+
 // TotalLength returns the size of the event in bytes.
 // There are 36 bytes for known-size fields, and an unknown number which we must
 // calculate for varying fields
