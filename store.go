@@ -93,22 +93,23 @@ func (s *Store) AppendToStream(streamName string, expected ExpectedVersion, even
 		return 0, ErrWrongExpectedVersion{Stream: streamName, Expected: expected, Actual: current}
 	}
 
-	version := current
-	for _, evt := range events {
-		version++
+	for i, evt := range events {
 		evt.StreamName = streamName
-		evt.Position = version
+		evt.Position = current + uint64(i) + 1
+	}
 
-		offset, err := s.log.Append(evt)
-		if err != nil {
-			return 0, err
-		}
-		if err := s.index.Apply(evt, offset); err != nil {
+	// Write the whole batch with a single fsync, then reflect it in the index.
+	offsets, err := s.log.AppendBatch(events)
+	if err != nil {
+		return 0, err
+	}
+	for i, evt := range events {
+		if err := s.index.Apply(evt, offsets[i]); err != nil {
 			return 0, err
 		}
 	}
 
-	return version, nil
+	return current + uint64(len(events)), nil
 }
 
 // ReadStreamForwards reads a stream in ascending position order, starting at the

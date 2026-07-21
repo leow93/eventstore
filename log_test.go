@@ -182,6 +182,59 @@ func TestDataLog_GlobalPosition(t *testing.T) {
 	assert.Equal(t, uint64(102), dataLog.globalPosition.Load())
 }
 
+func TestDataLog_AppendBatch(t *testing.T) {
+	tempDir := t.TempDir()
+	logPath := filepath.Join(tempDir, "batch.log")
+
+	log, err := newFastDataLog(logPath)
+	require.NoError(t, err)
+	defer log.Close()
+
+	events := []*Event{
+		{StreamName: "user-1", EventType: "Created", Payload: []byte("a")},
+		{StreamName: "user-1", EventType: "Renamed", Payload: []byte("b")},
+		{StreamName: "user-1", EventType: "Deleted", Payload: []byte("c")},
+	}
+
+	offsets, err := log.AppendBatch(events)
+	require.NoError(t, err)
+	require.Len(t, offsets, 3)
+
+	// The first event starts at 0 and each subsequent offset follows the previous
+	// event's encoded length.
+	assert.Equal(t, int64(0), offsets[0])
+	assert.Equal(t, int64(len(events[0].Encode())), offsets[1])
+	assert.Equal(t, int64(len(events[0].Encode())+len(events[1].Encode())), offsets[2])
+
+	// Global positions are assigned sequentially across the batch.
+	assert.Equal(t, uint64(1), events[0].GlobalPosition)
+	assert.Equal(t, uint64(2), events[1].GlobalPosition)
+	assert.Equal(t, uint64(3), events[2].GlobalPosition)
+
+	// Every event in the batch is durably readable at its reported offset.
+	for i, off := range offsets {
+		actual, err := log.ReadAt(off)
+		require.NoError(t, err)
+		assert.Equal(t, events[i].EventType, actual.EventType)
+		assert.Equal(t, events[i].Payload, actual.Payload)
+	}
+}
+
+func TestDataLog_AppendBatch_emptyIsNoOp(t *testing.T) {
+	tempDir := t.TempDir()
+	logPath := filepath.Join(tempDir, "empty_batch.log")
+
+	log, err := newFastDataLog(logPath)
+	require.NoError(t, err)
+	defer log.Close()
+
+	offsets, err := log.AppendBatch(nil)
+
+	require.NoError(t, err)
+	assert.Empty(t, offsets)
+	assert.Equal(t, int64(0), log.Size())
+}
+
 func TestDataLog_ReadAt(t *testing.T) {
 	tempDir := t.TempDir()
 	logPath := filepath.Join(tempDir, "data.log")

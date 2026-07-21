@@ -8,6 +8,10 @@ import (
 	"time"
 )
 
+// optimisticEventSize is a rough per-event size used only to pre-size the batch
+// write buffer; the buffer grows as needed, so the exact value is not important.
+const optimisticEventSize = 256
+
 // DataLog represents the append-only physical file on disk.
 //
 // Writes go through the file descriptor (append + fsync). Reads are served from
@@ -61,32 +65,56 @@ func (l *DataLog) GetGlobalPosition() uint64 {
 }
 
 func (l *DataLog) Append(event *Event) (int64, error) {
-	if event.Timestamp == 0 {
-		event.Timestamp = uint64(time.Now().UnixNano())
+	offsets, err := l.AppendBatch([]*Event{event})
+	if err != nil {
+		return 0, err
+	}
+	return offsets[0], nil
+}
+
+// AppendBatch appends a batch of events with a single fsync for the whole batch,
+// returning the byte offset of each event. fsync is a barrier: once it returns,
+// every write that preceded it is durable, so one sync at the end gives the whole
+// batch the same durability guarantee as syncing each event individually — but
+// pays the (dominant) fsync cost once instead of len(events) times.
+func (l *DataLog) AppendBatch(events []*Event) ([]int64, error) {
+	if len(events) == 0 {
+		return nil, nil
 	}
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	event.GlobalPosition = l.globalPosition.Add(1)
-	data := event.Encode()
+	offsets := make([]int64, len(events))
+	cursor := l.size
+	buf := make([]byte, 0, len(events)*optimisticEventSize)
 
-	writeOffset := l.size
+	for i, event := range events {
+		if event.Timestamp == 0 {
+			event.Timestamp = uint64(time.Now().UnixNano())
+		}
+		event.GlobalPosition = l.globalPosition.Add(1)
 
-	n, err := l.file.Write(data)
+		offsets[i] = cursor
+		data := event.Encode()
+		buf = append(buf, data...)
+		cursor += int64(len(data))
+	}
+
+	n, err := l.file.Write(buf)
 	if err != nil {
-		return 0, fmt.Errorf("failed to write event to data log: %w", err)
+		return nil, fmt.Errorf("failed to write batch to data log: %w", err)
 	}
 
 	if l.syncOnWrite {
 		if err := l.file.Sync(); err != nil {
-			return 0, fmt.Errorf("failed to sync to disk: %w", err)
+			return nil, fmt.Errorf("failed to sync to disk: %w", err)
 		}
 	}
 
 	l.size += int64(n)
 
-	return writeOffset, nil
+	return offsets, nil
 }
 
 // ReadAt reads a single event at the given byte offset via the memory-mapped view.
