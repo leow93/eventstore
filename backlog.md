@@ -48,6 +48,8 @@ Building your from-scratch index files and the GC-optimized memory structures re
 
 [ ] (Optional) Implement periodic index snapshots (snapshot.bin) so the system doesn't have to scan the entire index file on boot.
 
+[ ] Add a per-record CRC (e.g. CRC-32 Castagnoli) to the Event on-disk format. On log replay this lets recovery distinguish a torn tail (last write interrupted by a crash — truncate and continue) from mid-log corruption (fail loudly). Cheapest to add before real logs exist. NOTE: changes the on-disk format.
+
 ## Epic 3: Core Read & Write Semantics (Message-DB Style)
 Tying the indices and data log together to fulfill your core querying requirements.
 
