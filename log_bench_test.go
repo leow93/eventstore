@@ -1,4 +1,4 @@
-package storage
+package eventstore
 
 import (
 	"path/filepath"
@@ -17,7 +17,7 @@ func BenchmarkDataLog_Append(b *testing.B) {
 		tempDir := b.TempDir()
 		logPath := filepath.Join(tempDir, "sync.log")
 
-		// Enable syncOnWrite
+		// Enable syncOnWrite (the default)
 		log, err := NewDataLog(logPath)
 		if err != nil {
 			b.Fatalf("failed to create log: %v", err)
@@ -36,7 +36,7 @@ func BenchmarkDataLog_Append(b *testing.B) {
 		tempDir := b.TempDir()
 		logPath := filepath.Join(tempDir, "nosync.log")
 
-		// Disable syncOnWrite (Relies on OS Page Cache)
+		// Disable syncOnWrite (relies on OS page cache)
 		log, err := NewDataLog(logPath)
 		if err != nil {
 			b.Fatalf("failed to create log: %v", err)

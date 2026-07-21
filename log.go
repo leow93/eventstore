@@ -1,9 +1,7 @@
-package storage
+package eventstore
 
 import (
-	"encoding/binary"
 	"fmt"
-	"io"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -11,18 +9,23 @@ import (
 )
 
 // DataLog represents the append-only physical file on disk.
+//
+// Writes go through the file descriptor (append + fsync). Reads are served from
+// a memory-mapped view of the same file, refreshed lazily when a read needs bytes
+// that were appended after the current mapping was established.
 type DataLog struct {
-	mu             sync.Mutex // Protects concurrent writes to the file pointer
+	mu             sync.RWMutex // Guards appends and mmap remapping; readers hold RLock while decoding.
 	file           *os.File
-	size           int64 // Tracks current file size to return offsets
+	size           int64 // Tracks current file size to return offsets.
 	globalPosition atomic.Uint64
-	syncOnWrite    bool // Whether to sync to disk on each write. Always on, but an option for benchmarking.
+	syncOnWrite    bool // Whether to fsync on each write. On by default; an option for benchmarking.
+	reader         *MmapReader
 }
 
 func NewDataLog(filepath string) (*DataLog, error) {
 	// os.O_APPEND: Force all writes to the end of the file
 	// os.O_CREATE: Create the file if it doesn't exist
-	// os.O_RDWR: We are reading and writing through this descriptor (mmap for reads)
+	// os.O_RDWR: We need read access for the mmap-backed reader
 	flags := os.O_APPEND | os.O_CREATE | os.O_RDWR
 
 	file, err := os.OpenFile(filepath, flags, 0o644)
@@ -30,17 +33,22 @@ func NewDataLog(filepath string) (*DataLog, error) {
 		return nil, fmt.Errorf("failed to open data log: %w", err)
 	}
 
-	// Get current file size so we know where we are appending
+	// Get current file size so we know where we are appending.
 	stat, err := file.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("failed to stat data log: %w", err)
 	}
 
+	reader, err := NewMmapReader(file)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create mmap reader: %w", err)
+	}
+
 	return &DataLog{
-		mu:          sync.Mutex{},
 		file:        file,
 		size:        stat.Size(),
 		syncOnWrite: true,
+		reader:      reader,
 	}, nil
 }
 
@@ -81,47 +89,40 @@ func (l *DataLog) Append(event *Event) (int64, error) {
 	return writeOffset, nil
 }
 
-const optimisticReadSize = 1024
-
-// ReadAt implements an Optimistic read strategy.
-// We pre-allocate 1KB, assuming that this is  enough to read an entire event. If it isn't enough we allocate the exact amount needed from the headers.
+// ReadAt reads a single event at the given byte offset via the memory-mapped view.
+// If the offset falls beyond the current mapping (because the log has grown since
+// the last read), the mapping is refreshed first.
 func (l *DataLog) ReadAt(offset int64) (*Event, error) {
-	buf := make([]byte, optimisticReadSize)
-	n, err := l.file.ReadAt(buf, offset)
-	// io.EOF is expected if the file ends before our 4KB buffer is full
-	if err != nil && err != io.EOF {
-		return nil, fmt.Errorf("failed optimistic read at %d: %w", offset, err)
-	}
+	l.mu.RLock()
+	stale := offset >= l.reader.size
+	l.mu.RUnlock()
 
-	totalSize := binary.LittleEndian.Uint32(buf[0:4])
-
-	var fullData []byte
-
-	if int(totalSize) <= n {
-		// FAST PATH: We have everything. 1 Syscall.
-		fullData = buf[:totalSize]
-	} else {
-		// SLOW PATH: The event is larger than our optimistic buffer.
-		// Allocate the exact size and do a second read for the missing bytes.
-		fullData = make([]byte, totalSize)
-		copy(fullData, buf[:n]) // Keep what we already read
-
-		// Read directly into the remaining slice of fullData
-		if _, err := l.file.ReadAt(fullData[n:], offset+int64(n)); err != nil {
-			return nil, fmt.Errorf("failed to read large event remainder: %w", err)
+	if stale {
+		l.mu.Lock()
+		err := l.reader.Remap()
+		l.mu.Unlock()
+		if err != nil {
+			return nil, fmt.Errorf("failed to refresh mmap: %w", err)
 		}
 	}
 
-	return Decode(fullData)
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.reader.ReadAt(offset)
 }
 
 func (l *DataLog) Size() int64 {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	return l.size
 }
 
-// Close safely shuts down the file.
+// Close safely shuts down the file and releases the memory mapping.
 func (l *DataLog) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.reader != nil {
+		_ = l.reader.Close()
+	}
 	return l.file.Close()
 }

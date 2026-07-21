@@ -1,4 +1,4 @@
-package storage
+package eventstore
 
 import (
 	"encoding/binary"
@@ -10,7 +10,7 @@ type Event struct {
 	StreamName     string
 	EventType      string
 	Position       uint64 // Position in the stream
-	GlobalPosition uint64 // Position in the event store. Define by a monotonically increasing counter which will have gaps.
+	GlobalPosition uint64 // Position in the event store. Defined by a monotonically increasing counter.
 	Timestamp      uint64
 	Payload        []byte
 	Meta           []byte
@@ -18,7 +18,10 @@ type Event struct {
 
 // Encode serializes the event into a raw byte slice based on our binary layout.
 // When reading raw bytes from a file, the system needs to know exactly where one field ends and the next begins.
-// Since strings and payloads are variable in length, we must precede them with their length. Storing the Total Record Length at the very beginning of the record is also a pro-tip—it allows you to easily skip over records during sequential scans if you don't need to read their contents.
+// Since strings and payloads are variable in length, we must precede them with their length. Storing the Total Record
+// Length at the very beginning of the record also allows us to skip over records during sequential scans without
+// reading their contents.
+//
 // Here is the binary layout for a single Event Record:
 //
 // TotalLength (uint32 - 4 bytes)
@@ -39,8 +42,9 @@ func (e *Event) Encode() []byte {
 	payloadLen := uint32(len(e.Payload))
 	metaLen := uint32(len(e.Meta))
 
-	// Calculate total length (including the 4 bytes for TotalLength itself)
-	// 4 (TotalLength) + 2 (StreamNameLen) + len(StreamName) + 2 (EventTypeLen) + len(EventType) + 8 (Position) + 8 (GlobalPosition) + 8 (Timestamp) + 4 (PayloadLen) + len(Payload) + 4 (MetaLen)+ len(Meta)
+	// Calculate total length (including the 4 bytes for TotalLength itself):
+	// 4 (TotalLength) + 2 (StreamNameLen) + len(StreamName) + 2 (EventTypeLen) + len(EventType) +
+	// 8 (Position) + 8 (GlobalPosition) + 8 (Timestamp) + 4 (PayloadLen) + len(Payload) + 4 (MetaLen) + len(Meta)
 	totalLen := 4 + 2 + len(e.StreamName) + 2 + len(e.EventType) + 8 + 8 + 8 + 4 + len(e.Payload) + 4 + len(e.Meta)
 
 	buf := make([]byte, totalLen)
@@ -85,9 +89,8 @@ func (e *Event) Encode() []byte {
 	return buf
 }
 
-// TotalLength returns the size of the event in bytes.
-// There are 36 bytes for known-size fields, and an unknown number which we must
-// calculate for varying fields
+// TotalSize returns the encoded size of the event in bytes.
+// There are 40 bytes of fixed-size fields, plus the variable-length fields.
 func (e *Event) TotalSize() uint32 {
 	return uint32(40 + len(e.StreamName) + len(e.EventType) + len(e.Payload) + len(e.Meta))
 }

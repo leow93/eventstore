@@ -1,4 +1,4 @@
-package storage
+package eventstore
 
 import (
 	"bytes"
@@ -10,6 +10,18 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// newFastDataLog returns a DataLog with fsync-on-write disabled, for tests that
+// exercise logic unrelated to durability and don't want to pay the fsync cost.
+func newFastDataLog(p string) (*DataLog, error) {
+	l, err := NewDataLog(p)
+	if err != nil {
+		return nil, err
+	}
+
+	l.syncOnWrite = false
+	return l, nil
+}
 
 // TestDataLog_Append verifies that events are correctly written to the physical file
 // and that the returned byte offsets are perfectly accurate.
@@ -106,7 +118,7 @@ func TestDataLog_ConcurrentAppend(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines)
 
-	// Fire off 100 goroutines simultaneously trying to append 50 events each
+	// Fire off 100 goroutines simultaneously trying to append 20 events each
 	for i := range numGoroutines {
 		go func(routineID int) {
 			defer wg.Done()
@@ -157,7 +169,6 @@ func TestDataLog_GlobalPosition(t *testing.T) {
 	evt1 := &Event{StreamName: "a", EventType: "T1"}
 	evt2 := &Event{StreamName: "b", EventType: "T2"}
 
-	// Note: AppendBatch expects GlobalPosition to be assigned internally by the log
 	_, err = dataLog.Append(evt1)
 	require.NoError(t, err)
 	_, err = dataLog.Append(evt2)
@@ -179,7 +190,7 @@ func TestDataLog_ReadAt(t *testing.T) {
 	require.NoError(t, err)
 	defer log.Close()
 
-	// 1. Standard Event (Fits in 1KB optimistic read)
+	// 1. Standard Event
 	stdEvt := &Event{
 		StreamName: "user-123",
 		EventType:  "UserCreated",
@@ -190,7 +201,7 @@ func TestDataLog_ReadAt(t *testing.T) {
 	offset1, err := log.Append(stdEvt)
 	require.NoError(t, err)
 
-	// 2. Large Event (Forces the > 1KB slow-path read)
+	// 2. Large Event (forces the mapping to grow well beyond the first record)
 	largePayload := bytes.Repeat([]byte("A"), 1500) // 1.5KB payload
 	largeEvt := &Event{
 		StreamName: "user-123",

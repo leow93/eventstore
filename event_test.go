@@ -1,4 +1,4 @@
-package storage
+package eventstore
 
 import (
 	"encoding/binary"
