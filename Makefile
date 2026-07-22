@@ -1,4 +1,4 @@
-.PHONY: all fmt vet test test-full test-race test-full-race bench proto build run loadtest
+.PHONY: all fmt vet test test-full test-race test-full-race bench proto build run web loadtest
 
 # The default target runs the FAST tests
 all: fmt vet test-race
@@ -56,10 +56,15 @@ build:
 	@echo "==> Building binaries..."
 	go build -o bin/eventstored ./cmd/eventstored
 	go build -o bin/loadtest ./cmd/loadtest
+	go build -o bin/eventstore-web ./web
 
 ## run: Run the gRPC server (ADDR and DATA are overridable)
 run:
 	go run ./cmd/eventstored -addr $(or $(ADDR),:50051) -data $(or $(DATA),./data)
+
+## web: Run the read-only web admin console (ADDR, DATA overridable; SEED=1 seeds demo data if empty)
+web:
+	go run ./web -addr $(or $(ADDR),:8080) -data $(or $(DATA),./data) $(if $(SEED),-seed,)
 
 ## loadtest: Run the load-test client against a running server (see README for flags)
 loadtest:

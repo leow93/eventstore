@@ -3,12 +3,16 @@
 A single-node, append-only event-sourcing store with optimistic concurrency,
 ordered stream/category reads, and a gRPC API.
 
-- **Durable log** — every write is appended to a single log file and `fsync`ed.
+- **Durable log** — every write is appended to the active segment file and
+  `fsync`ed; the log is split into fixed-size segment files (one active, the rest
+  sealed and immutable).
 - **pread reads** — reads are served with `pread` (a small speculative window for
   random reads, a buffered sequential scan for replay); no lock, no SIGBUS.
 - **In-memory indexes** — stream and category indexes are derived from the log
   and rebuilt by replaying it on boot (the log is the single source of truth).
 - **gRPC API** — writes plus server-streaming reads.
+- **Web console** — a read-only admin UI (`web/`) for browsing streams and
+  categories, reading a stream, and scrolling a category feed.
 
 ## Requirements
 
@@ -41,11 +45,45 @@ go run ./cmd/eventstored -addr :50051 -data ./data
 | Flag    | Default     | Description                             |
 | ------- | ----------- | --------------------------------------- |
 | `-addr` | `:50051`    | TCP address to listen on                |
-| `-data` | `./data`    | Directory for the event log (`events.log`) |
+| `-data` | `./data`    | Directory for the event log (segment files) |
 
-On boot the server replays `events.log` to rebuild its in-memory indexes, so
-restarting against the same `-data` directory preserves all data. Stop it with
-`Ctrl-C` (it shuts down gracefully).
+On boot the server replays the log's segment files to rebuild its in-memory
+indexes, so restarting against the same `-data` directory preserves all data. Stop
+it with `Ctrl-C` (it shuts down gracefully).
+
+## Running the web console
+
+A read-only admin UI for browsing the store — see [`web/README.md`](web/README.md)
+for the full docs and HTTP API. It opens the data directory directly and shows
+live data: it follows another process's writes by reopening the store when the log
+grows, so new events appear on a page refresh.
+
+```sh
+# via make (defaults: -addr :8080, -data ./data)
+make web
+
+# seed demo data if the store is empty, then serve
+make web SEED=1
+
+# override the address / data directory
+make web ADDR=:9000 DATA=/tmp/es-data SEED=1
+
+# or directly
+go run ./web -addr :8080 -data ./data -seed
+```
+
+Then open <http://localhost:8080>. It can browse streams and categories, read a
+whole stream, and infinite-scroll a category feed.
+
+| Flag       | Default  | Description                                       |
+| ---------- | -------- | ------------------------------------------------- |
+| `-addr`    | `:8080`  | TCP address to listen on                          |
+| `-data`    | `./data` | Event store data directory                        |
+| `-seed`    | off      | Write demo events if the store is empty, then serve |
+| `-refresh` | `1s`     | Min interval between live-data checks (debounce)  |
+
+Typical setup: run `eventstored` (the gRPC writer) and the web console against the
+same `-data` directory; the console follows the writer's appends on refresh.
 
 ## Running the load test
 

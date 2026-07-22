@@ -1,9 +1,10 @@
 # Architecture
 
-An append-only event store. The **data log** on disk is the single source of
-truth; the **index** is a derived, in-memory view rebuilt by replaying the log on
-boot. Writes are single-writer with optimistic concurrency control; reads are
-served as fallible iterators over log positions.
+An append-only event store. The **data log** on disk — a sequence of fixed-size
+segment files — is the single source of truth; the **index** is a derived,
+in-memory view rebuilt by replaying the log on boot. Writes are single-writer with
+optimistic concurrency control; reads are served as fallible iterators over log
+positions.
 
 See the [Architecture Decision Records](adr/README.md) for the decisions behind
 the design — notably
@@ -33,13 +34,13 @@ flowchart TB
             idx_gp["maxGlobalPosition"]
         end
 
-        subgraph logsub["Data log — eventstore.DataLog (source of truth)"]
-            writepath["write: append + single fsync per batch<br/>assigns GlobalPosition"]
+        subgraph logsub["Data log — eventstore.SegmentedLog (source of truth)"]
+            writepath["write: append + single fsync per batch<br/>assigns GlobalPosition; rolls over at maxSize"]
             readpath["read: pread (speculative window;<br/>buffered sequential replay)"]
         end
     end
 
-    disk[("events.log<br/>append-only, CRC-per-record")]
+    disk[("segment files 000000.seg …<br/>active + sealed, CRC-per-record")]
 
     client -->|"protobuf RPC"| grpc
     grpc -->|"AppendToStream / ReadStream* / ReadCategory"| store
@@ -49,11 +50,11 @@ flowchart TB
     store -->|"AppendBatch"| writepath
     store -->|"ReadAt(LogPos)"| readpath
 
-    writepath -->|"write() + fsync()"| disk
+    writepath -->|"write() + fsync() to active segment"| disk
     readpath -->|"pread (lock-free)"| disk
 
     writepath -.->|"Apply(evt, pos) after durable"| idx_streams
-    disk -.->|"Rebuild replays log on boot"| derived
+    disk -.->|"Rebuild replays all segments on boot"| derived
 
     classDef truth fill:#1e3a5f,stroke:#4a90d9,color:#fff
     classDef mem fill:#3d2f1e,stroke:#c9902a,color:#fff
@@ -73,8 +74,8 @@ sequenceDiagram
     participant S as server.Server
     participant St as Store
     participant Ix as Index (in-mem)
-    participant L as DataLog
-    participant D as events.log
+    participant L as SegmentedLog
+    participant D as active segment
 
     C->>S: Append(stream, expectedVersion, events)
     S->>St: AppendToStream(...)
@@ -89,7 +90,7 @@ sequenceDiagram
         Note over St: assign each event's Position (1-based)
         St->>L: AppendBatch(events)
         activate L
-        Note over L: assign GlobalPosition (monotonic)<br/>encode records (+ CRC-32C)
+        Note over L: assign GlobalPosition (monotonic)<br/>encode records (+ CRC-32C)<br/>roll over to a new segment if the<br/>batch would exceed maxSize
         L->>D: write(batch)
         L->>D: fsync()  ← durability barrier, once per batch
         L-->>St: []LogPos
@@ -116,8 +117,8 @@ sequenceDiagram
     participant S as server.Server
     participant St as Store
     participant Ix as Index (in-mem)
-    participant L as DataLog
-    participant D as events.log
+    participant L as SegmentedLog
+    participant D as target segment
 
     C->>S: ReadStream(stream, from, limit, direction)
     S->>St: ReadStreamForwards / Backwards(...)
@@ -127,6 +128,7 @@ sequenceDiagram
     loop for each LogPos in slice
         S->>St: next()
         St->>L: ReadAt(pos)
+        Note over L: RLock → resolve segment pos.Segment()
         L->>D: pread record (speculative 4 KiB window)
         L->>L: Decode + verify CRC
         L-->>St: *Event
@@ -138,24 +140,28 @@ sequenceDiagram
 
 ## Boot / recovery — `Store.Open`
 
-The index holds no durable state. On open, the log is replayed from offset 0 with
-a buffered sequential reader (`logReader`, 1 MiB buffer); each complete record is
-applied to the index. A **torn tail** (partial trailing record from a crash between
-write and fsync) stops the scan cleanly, whereas a **CRC mismatch** is real
-corruption and fails the boot loudly.
+The index holds no durable state. On open, every segment is replayed in order
+(each with a buffered sequential reader, 1 MiB buffer) and each complete record is
+applied to the index. A **torn tail** is tolerated only in the **active** (last)
+segment (a crash between write and fsync) and stops the scan cleanly; a torn record
+in a **sealed** segment, or a **CRC mismatch** anywhere, is real corruption and
+fails the boot loudly.
 
 ```mermaid
 flowchart TB
-    open["Store.Open(dir)"] --> newlog["NewDataLog(events.log)"]
-    newlog --> rebuild["Index.Rebuild — buffered replay from offset 0"]
+    open["Store.Open(dir)"] --> newlog["NewSegmentedLog(dir)<br/>discover / migrate segments"]
+    newlog --> rebuild["Index.Rebuild → SegmentedLog.replay<br/>segments in ascending order"]
     rebuild --> read["logReader.next() → Decode + verify CRC"]
     read --> ok{"decode ok?"}
     ok -->|"yes"| apply["Index.Apply(evt, pos)"]
     apply --> more{"more records?"}
     more -->|"yes"| read
-    more -->|"io.EOF (clean end)"| seed
-    ok -->|"ErrChecksumMismatch"| corrupt["mid-log corruption<br/>FAIL boot loudly"]
-    ok -->|"io.ErrUnexpectedEOF / short record"| torn["torn tail<br/>stop scan cleanly, truncate"]
+    more -->|"io.EOF (end of segment)"| nextseg{"more segments?"}
+    nextseg -->|"yes"| read
+    nextseg -->|"no"| seed
+    ok -->|"ErrChecksumMismatch (any segment)"| corrupt["corruption<br/>FAIL boot loudly"]
+    ok -->|"torn record in a sealed segment"| corrupt
+    ok -->|"torn tail in the active segment"| torn["expected after a crash<br/>stop scan cleanly"]
     torn --> seed
     seed["SetGlobalPosition(index.MaxGlobalPosition)"] --> ready["Store ready"]
 
@@ -189,27 +195,27 @@ flowchart LR
     f9 -.-> note
 ```
 
-## Log positions & segmentation (planned)
+## Log positions & segmentation
 
-A `LogPos` packs a 32-bit segment number and a 32-bit in-segment byte offset into
+The log is split into numbered fixed-size segment files ([ADR 0012](adr/0012-segment-the-log.md)):
+the highest-numbered is **active** (append + fsync), and every earlier one is
+**sealed** (immutable). The active segment rolls over once a batch would push it
+past the target size (`DefaultSegmentSize`, 256 MiB), and a batch never spans two
+segments. A pre-segmentation `events.log` is adopted as `000000.seg` on first open.
+
+A `LogPos` packs the 32-bit segment number and a 32-bit in-segment byte offset into
 one `uint64`, keeping the index at 8 bytes per entry ([ADR 0014](adr/0014-logpos-packed-offset.md)).
-Today there is a single segment (number 0);
-[ADR 0012](adr/0012-segment-the-log.md) evolves this into numbered fixed-size
-segment files (one active, the rest sealed and immutable) to enable retention,
-backup, and clustering.
+Segmenting is what will let retention delete whole sealed segments (still to be
+built) and gives clustering a natural snapshot/replication unit.
 
 ```mermaid
 flowchart LR
-    subgraph now["Today — single segment"]
-        s0["000000 (active)<br/>events.log"]
-    end
-    subgraph planned["Planned — segmented log (ADR 0012)"]
+    subgraph segs["Segmented log (ADR 0012)"]
         p0["000000.seg<br/>sealed, immutable"]
         p1["000001.seg<br/>sealed, immutable"]
         p2["000002.seg<br/>active (append + fsync)"]
         p0 --- p1 --- p2
     end
-    now --> planned
 
     subgraph pos["LogPos = uint64"]
         hi["high 32 bits<br/>segment number"]
