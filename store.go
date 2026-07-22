@@ -99,12 +99,12 @@ func (s *Store) AppendToStream(streamName string, expected ExpectedVersion, even
 	}
 
 	// Write the whole batch with a single fsync, then reflect it in the index.
-	offsets, err := s.log.AppendBatch(events)
+	positions, err := s.log.AppendBatch(events)
 	if err != nil {
 		return 0, err
 	}
 	for i, evt := range events {
-		if err := s.index.Apply(evt, offsets[i]); err != nil {
+		if err := s.index.Apply(evt, positions[i]); err != nil {
 			return 0, err
 		}
 	}
@@ -116,32 +116,32 @@ func (s *Store) AppendToStream(streamName string, expected ExpectedVersion, even
 // inclusive 1-based position from (0 or 1 both mean "from the start"). A limit of
 // 0 or less reads to the end of the stream.
 func (s *Store) ReadStreamForwards(streamName string, from uint64, limit int) iter.Seq2[*Event, error] {
-	offsets := forwardSlice(s.index.StreamOffsets(streamName), from, limit)
-	return s.readOffsets(offsets)
+	positions := forwardSlice(s.index.StreamOffsets(streamName), from, limit)
+	return s.readOffsets(positions)
 }
 
 // ReadStreamBackwards reads a stream in descending position order, starting at the
 // inclusive 1-based position from (0 means "from the tip"). A limit of 0 or less
 // reads back to the start of the stream.
 func (s *Store) ReadStreamBackwards(streamName string, from uint64, limit int) iter.Seq2[*Event, error] {
-	offsets := backwardSlice(s.index.StreamOffsets(streamName), from, limit)
-	return s.readOffsets(offsets)
+	positions := backwardSlice(s.index.StreamOffsets(streamName), from, limit)
+	return s.readOffsets(positions)
 }
 
 // ReadCategory reads all events in a category in ascending (append) order,
 // starting at the inclusive 1-based category-local position from. A limit of 0 or
 // less reads to the end of the category.
 func (s *Store) ReadCategory(category string, from uint64, limit int) iter.Seq2[*Event, error] {
-	offsets := forwardSlice(s.index.CategoryOffsets(category), from, limit)
-	return s.readOffsets(offsets)
+	positions := forwardSlice(s.index.CategoryOffsets(category), from, limit)
+	return s.readOffsets(positions)
 }
 
-// readOffsets yields the events at the given log offsets in order. If a read
+// readOffsets yields the events at the given log positions in order. If a read
 // fails it yields the error once and stops.
-func (s *Store) readOffsets(offsets []int64) iter.Seq2[*Event, error] {
+func (s *Store) readOffsets(positions []LogPos) iter.Seq2[*Event, error] {
 	return func(yield func(*Event, error) bool) {
-		for _, off := range offsets {
-			evt, err := s.log.ReadAt(off)
+		for _, pos := range positions {
+			evt, err := s.log.ReadAt(pos)
 			if !yield(evt, err) {
 				return
 			}
@@ -152,27 +152,27 @@ func (s *Store) readOffsets(offsets []int64) iter.Seq2[*Event, error] {
 	}
 }
 
-// forwardSlice returns the sub-slice of offsets starting at the inclusive 1-based
-// position from, bounded by limit (<=0 means unbounded).
-func forwardSlice(offsets []int64, from uint64, limit int) []int64 {
+// forwardSlice returns the sub-slice of positions starting at the inclusive
+// 1-based position from, bounded by limit (<=0 means unbounded).
+func forwardSlice(positions []LogPos, from uint64, limit int) []LogPos {
 	start := 0
 	if from > 1 {
 		start = int(from - 1)
 	}
-	if start >= len(offsets) {
+	if start >= len(positions) {
 		return nil
 	}
-	selected := offsets[start:]
+	selected := positions[start:]
 	if limit > 0 && limit < len(selected) {
 		selected = selected[:limit]
 	}
 	return selected
 }
 
-// backwardSlice returns offsets in descending order starting at the inclusive
+// backwardSlice returns positions in descending order starting at the inclusive
 // 1-based position from (0 means the tip), bounded by limit (<=0 means unbounded).
-func backwardSlice(offsets []int64, from uint64, limit int) []int64 {
-	n := len(offsets)
+func backwardSlice(positions []LogPos, from uint64, limit int) []LogPos {
+	n := len(positions)
 	start := n - 1
 	if from > 0 && int(from) <= n {
 		start = int(from) - 1
@@ -186,9 +186,9 @@ func backwardSlice(offsets []int64, from uint64, limit int) []int64 {
 		return nil
 	}
 
-	out := make([]int64, count)
+	out := make([]LogPos, count)
 	for i := 0; i < count; i++ {
-		out[i] = offsets[start-i]
+		out[i] = positions[start-i]
 	}
 	return out
 }

@@ -64,12 +64,12 @@ func (l *DataLog) GetGlobalPosition() uint64 {
 	return l.globalPosition.Load()
 }
 
-func (l *DataLog) Append(event *Event) (int64, error) {
-	offsets, err := l.AppendBatch([]*Event{event})
+func (l *DataLog) Append(event *Event) (LogPos, error) {
+	positions, err := l.AppendBatch([]*Event{event})
 	if err != nil {
 		return 0, err
 	}
-	return offsets[0], nil
+	return positions[0], nil
 }
 
 // AppendBatch appends a batch of events with a single fsync for the whole batch,
@@ -77,7 +77,7 @@ func (l *DataLog) Append(event *Event) (int64, error) {
 // every write that preceded it is durable, so one sync at the end gives the whole
 // batch the same durability guarantee as syncing each event individually — but
 // pays the (dominant) fsync cost once instead of len(events) times.
-func (l *DataLog) AppendBatch(events []*Event) ([]int64, error) {
+func (l *DataLog) AppendBatch(events []*Event) ([]LogPos, error) {
 	if len(events) == 0 {
 		return nil, nil
 	}
@@ -85,7 +85,7 @@ func (l *DataLog) AppendBatch(events []*Event) ([]int64, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	offsets := make([]int64, len(events))
+	positions := make([]LogPos, len(events))
 	cursor := l.size
 	buf := make([]byte, 0, len(events)*optimisticEventSize)
 
@@ -95,7 +95,13 @@ func (l *DataLog) AppendBatch(events []*Event) ([]int64, error) {
 		}
 		event.GlobalPosition = l.globalPosition.Add(1)
 
-		offsets[i] = cursor
+		// Single-segment log: every record lives in segment 0. When the log is
+		// split into segments (doc/adr/0001), this is where an over-full segment
+		// rolls over to the next one.
+		if cursor >= MaxSegmentSize {
+			return nil, fmt.Errorf("data log: offset %d exceeds max segment size %d", cursor, MaxSegmentSize)
+		}
+		positions[i] = MakeLogPos(0, uint32(cursor))
 		data := event.Encode()
 		buf = append(buf, data...)
 		cursor += int64(len(data))
@@ -114,13 +120,18 @@ func (l *DataLog) AppendBatch(events []*Event) ([]int64, error) {
 
 	l.size += int64(n)
 
-	return offsets, nil
+	return positions, nil
 }
 
-// ReadAt reads a single event at the given byte offset via the memory-mapped view.
+// ReadAt reads a single event at the given position via the memory-mapped view.
 // If the offset falls beyond the current mapping (because the log has grown since
 // the last read), the mapping is refreshed first.
-func (l *DataLog) ReadAt(offset int64) (*Event, error) {
+func (l *DataLog) ReadAt(pos LogPos) (*Event, error) {
+	if pos.Segment() != 0 {
+		return nil, fmt.Errorf("data log: segment %d does not exist (single-segment log)", pos.Segment())
+	}
+	offset := int64(pos.Offset())
+
 	l.mu.RLock()
 	stale := offset >= l.reader.size
 	l.mu.RUnlock()

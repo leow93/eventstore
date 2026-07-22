@@ -13,16 +13,16 @@ import (
 func TestIndex_Apply_recordsStreamAndCategoryOffsets(t *testing.T) {
 	idx := NewIndex()
 
-	require.NoError(t, idx.Apply(&Event{StreamName: "user-1", EventType: "Created", GlobalPosition: 1}, 0))
-	require.NoError(t, idx.Apply(&Event{StreamName: "user-2", EventType: "Created", GlobalPosition: 2}, 40))
-	require.NoError(t, idx.Apply(&Event{StreamName: "user-1", EventType: "Renamed", GlobalPosition: 3}, 90))
+	require.NoError(t, idx.Apply(&Event{StreamName: "user-1", EventType: "Created", GlobalPosition: 1}, MakeLogPos(0, 0)))
+	require.NoError(t, idx.Apply(&Event{StreamName: "user-2", EventType: "Created", GlobalPosition: 2}, MakeLogPos(0, 40)))
+	require.NoError(t, idx.Apply(&Event{StreamName: "user-1", EventType: "Renamed", GlobalPosition: 3}, MakeLogPos(0, 90)))
 
-	// Stream offsets are recorded in stream order.
-	assert.Equal(t, []int64{0, 90}, idx.StreamOffsets("user-1"))
-	assert.Equal(t, []int64{40}, idx.StreamOffsets("user-2"))
+	// Stream positions are recorded in stream order.
+	assert.Equal(t, []LogPos{MakeLogPos(0, 0), MakeLogPos(0, 90)}, idx.StreamOffsets("user-1"))
+	assert.Equal(t, []LogPos{MakeLogPos(0, 40)}, idx.StreamOffsets("user-2"))
 
 	// Both streams share the "user" category, ordered by append order.
-	assert.Equal(t, []int64{0, 40, 90}, idx.CategoryOffsets("user"))
+	assert.Equal(t, []LogPos{MakeLogPos(0, 0), MakeLogPos(0, 40), MakeLogPos(0, 90)}, idx.CategoryOffsets("user"))
 
 	// The tip of each stream reflects the number of events applied.
 	version, exists := idx.StreamVersion("user-1")
@@ -73,10 +73,10 @@ func TestIndex_Rebuild_reconstructsFromLog(t *testing.T) {
 	idx := NewIndex()
 	require.NoError(t, idx.Rebuild(dataLog))
 
-	assert.Equal(t, []int64{offset1, offset3}, idx.StreamOffsets("user-1"))
-	assert.Equal(t, []int64{offset2}, idx.StreamOffsets("order-9"))
-	assert.Equal(t, []int64{offset1, offset3}, idx.CategoryOffsets("user"))
-	assert.Equal(t, []int64{offset2}, idx.CategoryOffsets("order"))
+	assert.Equal(t, []LogPos{offset1, offset3}, idx.StreamOffsets("user-1"))
+	assert.Equal(t, []LogPos{offset2}, idx.StreamOffsets("order-9"))
+	assert.Equal(t, []LogPos{offset1, offset3}, idx.CategoryOffsets("user"))
+	assert.Equal(t, []LogPos{offset2}, idx.CategoryOffsets("order"))
 
 	version, exists := idx.StreamVersion("user-1")
 	require.True(t, exists)
@@ -157,7 +157,7 @@ func TestIndex_Rebuild_stopsAtTornTailWithoutError(t *testing.T) {
 	require.NoError(t, idx.Rebuild(reopened))
 
 	// Only the two complete events are indexed; the torn tail is ignored.
-	assert.Equal(t, []int64{offset1, offset2}, idx.StreamOffsets("user-1"))
+	assert.Equal(t, []LogPos{offset1, offset2}, idx.StreamOffsets("user-1"))
 	version, exists := idx.StreamVersion("user-1")
 	require.True(t, exists)
 	assert.Equal(t, uint64(2), version)

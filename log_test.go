@@ -61,7 +61,7 @@ func TestDataLog_Append(t *testing.T) {
 	}
 
 	// First event should start at the very beginning of the file (offset 0)
-	if offset1 != 0 {
+	if offset1 != MakeLogPos(0, 0) {
 		t.Fatalf("expected first offset to be 0, got %d", offset1)
 	}
 	if evt1.GlobalPosition != 1 {
@@ -75,7 +75,7 @@ func TestDataLog_Append(t *testing.T) {
 	}
 
 	// The second event should start exactly where the first event's byte array ended
-	expectedOffset2 := int64(len(evt1.Encode()))
+	expectedOffset2 := MakeLogPos(0, uint32(len(evt1.Encode())))
 	if offset2 != expectedOffset2 {
 		t.Fatalf("expected second offset to be %d, got %d", expectedOffset2, offset2)
 	}
@@ -202,9 +202,9 @@ func TestDataLog_AppendBatch(t *testing.T) {
 
 	// The first event starts at 0 and each subsequent offset follows the previous
 	// event's encoded length.
-	assert.Equal(t, int64(0), offsets[0])
-	assert.Equal(t, int64(len(events[0].Encode())), offsets[1])
-	assert.Equal(t, int64(len(events[0].Encode())+len(events[1].Encode())), offsets[2])
+	assert.Equal(t, MakeLogPos(0, 0), offsets[0])
+	assert.Equal(t, MakeLogPos(0, uint32(len(events[0].Encode()))), offsets[1])
+	assert.Equal(t, MakeLogPos(0, uint32(len(events[0].Encode())+len(events[1].Encode()))), offsets[2])
 
 	// Global positions are assigned sequentially across the batch.
 	assert.Equal(t, uint64(1), events[0].GlobalPosition)
@@ -279,7 +279,7 @@ func TestDataLog_ReadAt(t *testing.T) {
 
 	// Verify TotalSize calculation is perfectly symmetrical
 	// (offset2 - offset1 should exactly equal the total size of evt1)
-	assert.Equal(t, uint32(offset2-offset1), readEvt1.TotalSize())
+	assert.Equal(t, offset2.Offset()-offset1.Offset(), readEvt1.TotalSize())
 
 	// --- Verify Large Event ---
 	readEvt2, err := log.ReadAt(offset2)

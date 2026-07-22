@@ -37,7 +37,7 @@ func TestMmapReader_ReadAt(t *testing.T) {
 	defer reader.Close()
 
 	// Read the event back using the offset provided by Append
-	decodedEvt, err := reader.ReadAt(offset)
+	decodedEvt, err := reader.ReadAt(int64(offset.Offset()))
 	if err != nil {
 		t.Fatalf("failed to read event at offset %d: %v", offset, err)
 	}
@@ -85,7 +85,7 @@ func TestMmapReader_Remap(t *testing.T) {
 		t.Fatalf("failed to append second: %v", err)
 	}
 
-	if _, err := reader.ReadAt(secondOffset); err == nil {
+	if _, err := reader.ReadAt(int64(secondOffset.Offset())); err == nil {
 		t.Fatal("expected read of unmapped tail to fail before remap")
 	}
 
@@ -94,7 +94,7 @@ func TestMmapReader_Remap(t *testing.T) {
 	}
 
 	// Both events are now readable.
-	firstEvt, err := reader.ReadAt(firstOffset)
+	firstEvt, err := reader.ReadAt(int64(firstOffset.Offset()))
 	if err != nil {
 		t.Fatalf("failed to read first event after remap: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestMmapReader_Remap(t *testing.T) {
 		t.Errorf("expected event type First, got %s", firstEvt.EventType)
 	}
 
-	secondEvt, err := reader.ReadAt(secondOffset)
+	secondEvt, err := reader.ReadAt(int64(secondOffset.Offset()))
 	if err != nil {
 		t.Fatalf("failed to read second event after remap: %v", err)
 	}
