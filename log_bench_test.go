@@ -5,6 +5,39 @@ import (
 	"testing"
 )
 
+// BenchmarkDataLog_ReadAt measures random single-record reads via pread over a
+// warm log.
+func BenchmarkDataLog_ReadAt(b *testing.B) {
+	const n = 10_000
+
+	log, err := newFastDataLog(filepath.Join(b.TempDir(), "read.log"))
+	if err != nil {
+		b.Fatalf("failed to create log: %v", err)
+	}
+	defer log.Close()
+
+	positions := make([]LogPos, n)
+	for i := range positions {
+		pos, err := log.Append(&Event{
+			StreamName: "benchmark-stream",
+			EventType:  "TestFired",
+			Payload:    []byte(`{"status": "running", "metric": 99.9}`),
+			Meta:       []byte(`{"actor": "system"}`),
+		})
+		if err != nil {
+			b.Fatalf("append failed: %v", err)
+		}
+		positions[i] = pos
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := log.ReadAt(positions[i%n]); err != nil {
+			b.Fatalf("read failed: %v", err)
+		}
+	}
+}
+
 func BenchmarkDataLog_Append(b *testing.B) {
 	evt := &Event{
 		StreamName: "benchmark-stream",

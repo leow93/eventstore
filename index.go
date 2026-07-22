@@ -3,6 +3,7 @@ package eventstore
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"sync"
 )
@@ -101,23 +102,24 @@ func (idx *Index) MaxGlobalPosition() uint64 {
 // fails the boot loudly; any other decode failure is treated as a torn tail and
 // stops the scan cleanly at that offset.
 func (idx *Index) Rebuild(dataLog *DataLog) error {
-	size := dataLog.Size()
-	offset := int64(0)
+	r := dataLog.newReader()
 
-	for offset < size {
-		pos := MakeLogPos(0, uint32(offset))
-		evt, err := dataLog.ReadAt(pos)
+	for {
+		pos, evt, err := r.next()
 		if err != nil {
-			if errors.Is(err, ErrChecksumMismatch) {
-				return fmt.Errorf("index rebuild: corruption at offset %d of %d: %w", offset, size, err)
+			if errors.Is(err, io.EOF) {
+				break // clean end of the log
 			}
-			log.Printf("index rebuild: stopping at offset %d of %d (torn tail: %v)", offset, size, err)
+			if errors.Is(err, ErrChecksumMismatch) {
+				return fmt.Errorf("index rebuild: corruption at offset %d: %w", pos.Offset(), err)
+			}
+			// io.ErrUnexpectedEOF (or a decode failure): a torn trailing record.
+			log.Printf("index rebuild: stopping at offset %d (torn tail: %v)", pos.Offset(), err)
 			break
 		}
 		if err := idx.Apply(evt, pos); err != nil {
 			return err
 		}
-		offset += int64(evt.TotalSize())
 	}
 
 	return nil

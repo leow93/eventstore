@@ -5,9 +5,12 @@ truth; the **index** is a derived, in-memory view rebuilt by replaying the log o
 boot. Writes are single-writer with optimistic concurrency control; reads are
 served as fallible iterators over log positions.
 
-See the ADRs for the decisions behind the design:
-[0001 — segmented log with pread reads](adr/0001-segmented-append-only-log-with-pread-reads.md),
-[0002 — per-record CRC](adr/0002-per-record-crc-for-corruption-detection.md).
+See the [Architecture Decision Records](adr/README.md) for the decisions behind
+the design — notably
+[0001 — append-only log as source of truth](adr/0001-append-only-log-as-source-of-truth.md),
+[0011 — per-record CRC](adr/0011-per-record-crc.md),
+[0013 — chunked pread reads](adr/0013-chunked-pread-reads.md), and
+[0012 — segment the log](adr/0012-segment-the-log.md).
 
 ## Component overview
 
@@ -32,7 +35,7 @@ flowchart TB
 
         subgraph logsub["Data log — eventstore.DataLog (source of truth)"]
             writepath["write: append + single fsync per batch<br/>assigns GlobalPosition"]
-            readpath["read: MmapReader (zero-copy, lazy remap)"]
+            readpath["read: pread (speculative window;<br/>buffered sequential replay)"]
         end
     end
 
@@ -47,7 +50,7 @@ flowchart TB
     store -->|"ReadAt(LogPos)"| readpath
 
     writepath -->|"write() + fsync()"| disk
-    readpath -->|"mmap / pread"| disk
+    readpath -->|"pread (lock-free)"| disk
 
     writepath -.->|"Apply(evt, pos) after durable"| idx_streams
     disk -.->|"Rebuild replays log on boot"| derived
@@ -101,8 +104,9 @@ sequenceDiagram
 
 ## Read path — stream / category iterators
 
-Reads never take the write lock. The store resolves an ordered slice of `LogPos`
-from the index, then streams each record from the log as an
+Reads never take the write lock: the log publishes its durable size as an atomic,
+and each read snapshots it and preads below it. The store resolves an ordered slice
+of `LogPos` from the index, then streams each record from the log as an
 `iter.Seq2[*Event, error]`. gRPC forwards each event to the client, stopping early
 on client disconnect.
 
@@ -123,7 +127,7 @@ sequenceDiagram
     loop for each LogPos in slice
         S->>St: next()
         St->>L: ReadAt(pos)
-        L->>D: mmap ReadAt (lazy Remap if stale)
+        L->>D: pread record (speculative 4 KiB window)
         L->>L: Decode + verify CRC
         L-->>St: *Event
         St-->>S: (event, nil)
@@ -134,23 +138,24 @@ sequenceDiagram
 
 ## Boot / recovery — `Store.Open`
 
-The index holds no durable state. On open, the log is replayed from offset 0;
-each complete record is applied to the index. A **torn tail** (partial trailing
-record from a crash between write and fsync) stops the scan cleanly, whereas a
-**CRC mismatch** is real corruption and fails the boot loudly.
+The index holds no durable state. On open, the log is replayed from offset 0 with
+a buffered sequential reader (`logReader`, 1 MiB buffer); each complete record is
+applied to the index. A **torn tail** (partial trailing record from a crash between
+write and fsync) stops the scan cleanly, whereas a **CRC mismatch** is real
+corruption and fails the boot loudly.
 
 ```mermaid
 flowchart TB
     open["Store.Open(dir)"] --> newlog["NewDataLog(events.log)"]
-    newlog --> rebuild["Index.Rebuild — replay from offset 0"]
-    rebuild --> read["ReadAt(offset) → Decode"]
+    newlog --> rebuild["Index.Rebuild — buffered replay from offset 0"]
+    rebuild --> read["logReader.next() → Decode + verify CRC"]
     read --> ok{"decode ok?"}
-    ok -->|"yes"| apply["Index.Apply(evt, pos)<br/>advance offset by TotalSize"]
-    apply --> more{"offset < size?"}
+    ok -->|"yes"| apply["Index.Apply(evt, pos)"]
+    apply --> more{"more records?"}
     more -->|"yes"| read
-    more -->|"no"| seed
+    more -->|"io.EOF (clean end)"| seed
     ok -->|"ErrChecksumMismatch"| corrupt["mid-log corruption<br/>FAIL boot loudly"]
-    ok -->|"short / torn record"| torn["torn tail<br/>stop scan cleanly, truncate"]
+    ok -->|"io.ErrUnexpectedEOF / short record"| torn["torn tail<br/>stop scan cleanly, truncate"]
     torn --> seed
     seed["SetGlobalPosition(index.MaxGlobalPosition)"] --> ready["Store ready"]
 
@@ -163,7 +168,7 @@ flowchart TB
 Each record is length-prefixed and ends with a CRC-32C over every preceding byte
 (length prefix included). Trailing placement means a short/torn write fails the
 length check (recoverable) while a bit-flip in a complete record fails the CRC
-check (unrecoverable) — see [ADR 0002](adr/0002-per-record-crc-for-corruption-detection.md).
+check (unrecoverable) — see [ADR 0011](adr/0011-per-record-crc.md).
 
 ```mermaid
 flowchart LR
@@ -187,17 +192,18 @@ flowchart LR
 ## Log positions & segmentation (planned)
 
 A `LogPos` packs a 32-bit segment number and a 32-bit in-segment byte offset into
-one `uint64`, keeping the index at 8 bytes per entry. Today there is a single
-segment (number 0); [ADR 0001](adr/0001-segmented-append-only-log-with-pread-reads.md)
-evolves this into numbered fixed-size segment files (one active, the rest sealed
-and immutable) to enable retention, backup, and clustering.
+one `uint64`, keeping the index at 8 bytes per entry ([ADR 0014](adr/0014-logpos-packed-offset.md)).
+Today there is a single segment (number 0);
+[ADR 0012](adr/0012-segment-the-log.md) evolves this into numbered fixed-size
+segment files (one active, the rest sealed and immutable) to enable retention,
+backup, and clustering.
 
 ```mermaid
 flowchart LR
     subgraph now["Today — single segment"]
         s0["000000 (active)<br/>events.log"]
     end
-    subgraph planned["Planned — segmented log (ADR 0001)"]
+    subgraph planned["Planned — segmented log (ADR 0012)"]
         p0["000000.seg<br/>sealed, immutable"]
         p1["000001.seg<br/>sealed, immutable"]
         p2["000002.seg<br/>active (append + fsync)"]

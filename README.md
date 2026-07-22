@@ -4,7 +4,8 @@ A single-node, append-only event-sourcing store with optimistic concurrency,
 ordered stream/category reads, and a gRPC API.
 
 - **Durable log** — every write is appended to a single log file and `fsync`ed.
-- **mmap reads** — reads are served from a memory-mapped view of the log.
+- **pread reads** — reads are served with `pread` (a small speculative window for
+  random reads, a buffered sequential scan for replay); no lock, no SIGBUS.
 - **In-memory indexes** — stream and category indexes are derived from the log
   and rebuilt by replaying it on boot (the log is the single source of truth).
 - **gRPC API** — writes plus server-streaming reads.

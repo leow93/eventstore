@@ -40,7 +40,7 @@ type Store struct {
 	index *Index
 
 	// writeMu serializes writers so the check-then-append critical section is
-	// atomic. Reads do not take it (they use the index and mmap directly).
+	// atomic. Reads do not take it (they use the index and pread directly).
 	writeMu sync.Mutex
 }
 

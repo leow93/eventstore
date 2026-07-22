@@ -2,8 +2,7 @@
 
 Date: 2026-04-24
 
-Status: Superseded by [0013](0013-chunked-pread-reads.md)
-(0013 is accepted but not yet implemented — mmap remains the live read path until then)
+Status: Superseded by [0013](0013-chunked-pread-reads.md) (mmap has been removed)
 
 ## Context
 
