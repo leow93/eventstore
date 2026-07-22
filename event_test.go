@@ -135,6 +135,28 @@ func TestEvent_Decode(t *testing.T) {
 			result:        nil,
 		},
 		{
+			name: "a flipped byte in the record body fails the checksum",
+			makeData: func() []byte {
+				corrupt := make([]byte, len(validData))
+				copy(corrupt, validData)
+				corrupt[len(corrupt)/2] ^= 0xFF // flip a byte in the middle of the record
+				return corrupt
+			},
+			expectedError: ErrChecksumMismatch,
+			result:        nil,
+		},
+		{
+			name: "a flipped byte in the trailing checksum fails the checksum",
+			makeData: func() []byte {
+				corrupt := make([]byte, len(validData))
+				copy(corrupt, validData)
+				corrupt[len(corrupt)-1] ^= 0xFF // flip a byte in the CRC itself
+				return corrupt
+			},
+			expectedError: ErrChecksumMismatch,
+			result:        nil,
+		},
+		{
 			name: "decodes the event as expected",
 			makeData: func() []byte {
 				return validData

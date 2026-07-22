@@ -1,6 +1,8 @@
 package eventstore
 
 import (
+	"errors"
+	"fmt"
 	"log"
 	"sync"
 )
@@ -94,9 +96,10 @@ func (idx *Index) MaxGlobalPosition() uint64 {
 // the index. A trailing partial record (a torn write left by a crash between
 // append and fsync) stops the scan cleanly rather than failing the boot.
 //
-// Note: with no per-record checksum yet, Rebuild cannot distinguish a torn tail
-// from corruption in the middle of the log; it stops at the first record it
-// cannot decode. Adding a CRC to the record format would let us tell them apart.
+// A per-record CRC lets Rebuild tell the two apart: a checksum mismatch means the
+// bytes of an otherwise-complete record were corrupted, which is unrecoverable and
+// fails the boot loudly; any other decode failure is treated as a torn tail and
+// stops the scan cleanly at that offset.
 func (idx *Index) Rebuild(dataLog *DataLog) error {
 	size := dataLog.Size()
 	offset := int64(0)
@@ -104,7 +107,10 @@ func (idx *Index) Rebuild(dataLog *DataLog) error {
 	for offset < size {
 		evt, err := dataLog.ReadAt(offset)
 		if err != nil {
-			log.Printf("index rebuild: stopping at offset %d of %d (unreadable record: %v)", offset, size, err)
+			if errors.Is(err, ErrChecksumMismatch) {
+				return fmt.Errorf("index rebuild: corruption at offset %d of %d: %w", offset, size, err)
+			}
+			log.Printf("index rebuild: stopping at offset %d of %d (torn tail: %v)", offset, size, err)
 			break
 		}
 		if err := idx.Apply(evt, offset); err != nil {

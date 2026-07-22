@@ -3,7 +3,18 @@ package eventstore
 import (
 	"encoding/binary"
 	"errors"
+	"hash/crc32"
 )
+
+// crc32cTable is the Castagnoli polynomial table used for per-record checksums.
+// CRC-32C is hardware-accelerated on x86-64 (SSE4.2) and ARM64, so it is
+// effectively free relative to the fsync that dominates a write.
+var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
+
+// minRecordSize is the encoded size of a record whose variable-length fields are
+// all empty: the fixed fields plus the 4-byte length prefix and 4-byte trailing
+// CRC. Any declared TotalLength below this is an impossible/corrupt length prefix.
+const minRecordSize = 44
 
 // Event represents the logical structure of our event data.
 type Event struct {
@@ -36,16 +47,22 @@ type Event struct {
 // Payload (Variable bytes)
 // MetaLength (uint32 - 4 bytes)
 // Meta (Variable bytes)
+// CRC (uint32 - 4 bytes) - CRC-32C over every preceding byte of the record
+//
+// The CRC is the last field so that a torn/short write fails the TotalLength-based
+// length check (recoverable — truncate the tail) while a bit-flip inside an
+// otherwise-complete record fails the CRC check (unrecoverable — fail loudly).
 func (e *Event) Encode() []byte {
 	streamNameLen := uint16(len(e.StreamName))
 	eventTypeLen := uint16(len(e.EventType))
 	payloadLen := uint32(len(e.Payload))
 	metaLen := uint32(len(e.Meta))
 
-	// Calculate total length (including the 4 bytes for TotalLength itself):
+	// Calculate total length (including the 4 bytes for TotalLength itself and the
+	// trailing 4-byte CRC):
 	// 4 (TotalLength) + 2 (StreamNameLen) + len(StreamName) + 2 (EventTypeLen) + len(EventType) +
-	// 8 (Position) + 8 (GlobalPosition) + 8 (Timestamp) + 4 (PayloadLen) + len(Payload) + 4 (MetaLen) + len(Meta)
-	totalLen := 4 + 2 + len(e.StreamName) + 2 + len(e.EventType) + 8 + 8 + 8 + 4 + len(e.Payload) + 4 + len(e.Meta)
+	// 8 (Position) + 8 (GlobalPosition) + 8 (Timestamp) + 4 (PayloadLen) + len(Payload) + 4 (MetaLen) + len(Meta) + 4 (CRC)
+	totalLen := 4 + 2 + len(e.StreamName) + 2 + len(e.EventType) + 8 + 8 + 8 + 4 + len(e.Payload) + 4 + len(e.Meta) + 4
 
 	buf := make([]byte, totalLen)
 
@@ -86,18 +103,24 @@ func (e *Event) Encode() []byte {
 	offset += 4
 	copy(buf[offset:], e.Meta)
 
+	// 7. CRC-32C over every preceding byte (length prefix through meta).
+	crc := crc32.Checksum(buf[:totalLen-4], crc32cTable)
+	binary.LittleEndian.PutUint32(buf[totalLen-4:], crc)
+
 	return buf
 }
 
 // TotalSize returns the encoded size of the event in bytes.
-// There are 40 bytes of fixed-size fields, plus the variable-length fields.
+// There are 44 bytes of fixed-size fields (including the trailing 4-byte CRC),
+// plus the variable-length fields.
 func (e *Event) TotalSize() uint32 {
-	return uint32(40 + len(e.StreamName) + len(e.EventType) + len(e.Payload) + len(e.Meta))
+	return uint32(minRecordSize + len(e.StreamName) + len(e.EventType) + len(e.Payload) + len(e.Meta))
 }
 
 var (
 	ErrDataTooShortForTotalLen      = errors.New("length of data too small for total length")
 	ErrDataSliceSmallerThanTotalLen = errors.New("data slice smaller than encoded total length")
+	ErrChecksumMismatch             = errors.New("event checksum mismatch")
 )
 
 func Decode(data []byte) (*Event, error) {
@@ -105,9 +128,24 @@ func Decode(data []byte) (*Event, error) {
 		return nil, ErrDataTooShortForTotalLen
 	}
 	totalLen := binary.LittleEndian.Uint32(data[0:4])
+	if totalLen < minRecordSize {
+		// An impossibly small declared length: a corrupt or partially-written
+		// length prefix. Treat as a short/torn record rather than trusting it.
+		return nil, ErrDataTooShortForTotalLen
+	}
 	if len(data) < int(totalLen) {
 		return nil, ErrDataSliceSmallerThanTotalLen
 	}
+
+	// Verify the trailing CRC before trusting any field length. A short/torn
+	// record is caught by the checks above; a bit-flip in a complete record is
+	// caught here, so callers can tell a recoverable torn tail from real
+	// corruption.
+	storedCRC := binary.LittleEndian.Uint32(data[totalLen-4 : totalLen])
+	if crc32.Checksum(data[:totalLen-4], crc32cTable) != storedCRC {
+		return nil, ErrChecksumMismatch
+	}
+
 	evt := &Event{}
 	offset := 4
 

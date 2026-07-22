@@ -86,6 +86,43 @@ func TestIndex_Rebuild_reconstructsFromLog(t *testing.T) {
 	assert.Equal(t, evt3.GlobalPosition, idx.MaxGlobalPosition())
 }
 
+func TestIndex_Rebuild_failsLoudlyOnMidLogCorruption(t *testing.T) {
+	tempDir := t.TempDir()
+	logPath := filepath.Join(tempDir, "corrupt.log")
+
+	dataLog, err := newFastDataLog(logPath)
+	require.NoError(t, err)
+
+	_, err = dataLog.Append(&Event{StreamName: "user-1", EventType: "Created", Payload: []byte("a")})
+	require.NoError(t, err)
+	_, err = dataLog.Append(&Event{StreamName: "user-1", EventType: "Renamed", Payload: []byte("b")})
+	require.NoError(t, err)
+	require.NoError(t, dataLog.Close())
+
+	// Flip a byte inside the body of the first (complete, non-trailing) record.
+	// This is corruption, not a torn tail: it must fail the boot rather than be
+	// silently truncated.
+	f, err := os.OpenFile(logPath, os.O_RDWR, 0o644)
+	require.NoError(t, err)
+	buf := make([]byte, 1)
+	_, err = f.ReadAt(buf, 10)
+	require.NoError(t, err)
+	buf[0] ^= 0xFF
+	_, err = f.WriteAt(buf, 10)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	reopened, err := newFastDataLog(logPath)
+	require.NoError(t, err)
+	defer reopened.Close()
+
+	idx := NewIndex()
+	err = idx.Rebuild(reopened)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrChecksumMismatch)
+}
+
 func TestIndex_Rebuild_stopsAtTornTailWithoutError(t *testing.T) {
 	tempDir := t.TempDir()
 	logPath := filepath.Join(tempDir, "torn.log")
