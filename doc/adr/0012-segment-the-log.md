@@ -2,7 +2,7 @@
 
 Date: 2026-07-22
 
-Status: Accepted (segmentation implemented; retention still to come)
+Status: Accepted (segmentation implemented; retention deferred — not currently needed)
 
 ## Context
 
@@ -50,5 +50,9 @@ segment 0.
   a torn or corrupt record in a sealed segment fails loudly.
 - Migration: a pre-segmentation `events.log` is renamed to `000000.seg` on first
   open (only when no `.seg` files exist yet).
-- **Not yet implemented:** retention (`DropSegmentsBefore` + index pruning) — the
-  next step. Segmenting is what makes it possible; nothing deletes segments today.
+- **Deferred:** retention (`DropSegmentsBefore` + index pruning). Segmenting makes
+  it a whole-file operation when wanted, but nothing needs it yet — event sourcing
+  keeps everything, and the natural driver (Raft log compaction behind snapshots)
+  waits on Epic 4. The log grows unbounded by design until then. Building it now
+  would mean solving OCC-tip tracking and position-shift semantics for no current
+  benefit.

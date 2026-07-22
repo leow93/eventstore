@@ -33,6 +33,6 @@ landed yet.
 | #  | Decision | Status |
 |----|----------|--------|
 | [0011](0011-per-record-crc.md) | Per-record CRC-32C for corruption detection | Accepted |
-| [0012](0012-segment-the-log.md) | Segment the log into fixed-size files | Accepted (segmentation done; retention pending) |
+| [0012](0012-segment-the-log.md) | Segment the log into fixed-size files | Accepted (segmentation done; retention deferred) |
 | [0013](0013-chunked-pread-reads.md) | Serve reads with chunked pread instead of mmap | Accepted (implemented) |
 | [0014](0014-logpos-packed-offset.md) | Pack (segment, offset) into a uint64 LogPos | Accepted |

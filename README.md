@@ -144,7 +144,7 @@ batch, so larger batches amortise it. Rough numbers on an Apple M2 Pro:
 | 100      | ~21,000 events/s |
 | 1000     | ~180,000 events/s|
 
-Reads come straight from the memory-mapped log and run at ~1M events/s.
+Reads come straight from the log via `pread` and stream back at ~1M events/s.
 
 ## Development
 
