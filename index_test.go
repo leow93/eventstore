@@ -52,10 +52,7 @@ func TestIndex_Apply_returnsErrorForStreamWithoutCategory(t *testing.T) {
 }
 
 func TestIndex_Rebuild_reconstructsFromLog(t *testing.T) {
-	tempDir := t.TempDir()
-	logPath := filepath.Join(tempDir, "rebuild.log")
-
-	dataLog, err := newFastDataLog(logPath)
+	dataLog, err := newFastLog(t.TempDir())
 	require.NoError(t, err)
 	defer dataLog.Close()
 
@@ -87,10 +84,9 @@ func TestIndex_Rebuild_reconstructsFromLog(t *testing.T) {
 }
 
 func TestIndex_Rebuild_failsLoudlyOnMidLogCorruption(t *testing.T) {
-	tempDir := t.TempDir()
-	logPath := filepath.Join(tempDir, "corrupt.log")
+	dir := t.TempDir()
 
-	dataLog, err := newFastDataLog(logPath)
+	dataLog, err := newFastLog(dir)
 	require.NoError(t, err)
 
 	_, err = dataLog.Append(&Event{StreamName: "user-1", EventType: "Created", Payload: []byte("a")})
@@ -99,10 +95,10 @@ func TestIndex_Rebuild_failsLoudlyOnMidLogCorruption(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, dataLog.Close())
 
-	// Flip a byte inside the body of the first (complete, non-trailing) record.
-	// This is corruption, not a torn tail: it must fail the boot rather than be
-	// silently truncated.
-	f, err := os.OpenFile(logPath, os.O_RDWR, 0o644)
+	// Flip a byte inside the body of the first (complete, non-trailing) record of
+	// segment 0. This is corruption, not a torn tail: it must fail the boot rather
+	// than be silently truncated.
+	f, err := os.OpenFile(filepath.Join(dir, segmentName(0)), os.O_RDWR, 0o644)
 	require.NoError(t, err)
 	buf := make([]byte, 1)
 	_, err = f.ReadAt(buf, 10)
@@ -112,7 +108,7 @@ func TestIndex_Rebuild_failsLoudlyOnMidLogCorruption(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, f.Close())
 
-	reopened, err := newFastDataLog(logPath)
+	reopened, err := newFastLog(dir)
 	require.NoError(t, err)
 	defer reopened.Close()
 
@@ -124,10 +120,9 @@ func TestIndex_Rebuild_failsLoudlyOnMidLogCorruption(t *testing.T) {
 }
 
 func TestIndex_Rebuild_stopsAtTornTailWithoutError(t *testing.T) {
-	tempDir := t.TempDir()
-	logPath := filepath.Join(tempDir, "torn.log")
+	dir := t.TempDir()
 
-	dataLog, err := newFastDataLog(logPath)
+	dataLog, err := newFastLog(dir)
 	require.NoError(t, err)
 
 	evt1 := &Event{StreamName: "user-1", EventType: "Created", Payload: []byte("a")}
@@ -138,18 +133,18 @@ func TestIndex_Rebuild_stopsAtTornTailWithoutError(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, dataLog.Close())
 
-	// Simulate a torn write: a record header claiming a length whose body never
-	// made it to disk (e.g. a crash between append and fsync).
+	// Simulate a torn write in the active segment: a record header claiming a
+	// length whose body never made it to disk (a crash between append and fsync).
 	tornHeader := make([]byte, 4)
 	binary.LittleEndian.PutUint32(tornHeader, 100_000)
-	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(filepath.Join(dir, segmentName(0)), os.O_APPEND|os.O_WRONLY, 0o644)
 	require.NoError(t, err)
 	_, err = f.Write(tornHeader)
 	require.NoError(t, err)
 	require.NoError(t, f.Close())
 
 	// Reopen the log so its size includes the torn tail, then rebuild.
-	reopened, err := newFastDataLog(logPath)
+	reopened, err := newFastLog(dir)
 	require.NoError(t, err)
 	defer reopened.Close()
 

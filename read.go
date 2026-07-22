@@ -57,28 +57,31 @@ func readRecordAt(src io.ReaderAt, offset, size int64) (*Event, error) {
 	return Decode(rec)
 }
 
-// logReader replays the log sequentially, buffering large chunks so a full scan
-// (e.g. index rebuild) issues far fewer syscalls than one pread per record.
+// logReader replays a single segment sequentially, buffering large chunks so a
+// full scan (e.g. index rebuild) issues far fewer syscalls than one pread per
+// record.
 type logReader struct {
 	br     *bufio.Reader
-	offset int64 // byte offset of the next record to be returned
+	segNum uint32
+	offset int64 // byte offset of the next record within the segment
 }
 
-// newReader returns a sequential reader over the durable prefix of the log.
-func (l *DataLog) newReader() *logReader {
-	size := l.size.Load()
+// newReader returns a sequential reader over the durable prefix of the segment.
+func (s *Segment) newReader() *logReader {
+	size := s.size.Load()
 	return &logReader{
-		br:     bufio.NewReaderSize(io.NewSectionReader(l.file, 0, size), replayBufferSize),
+		br:     bufio.NewReaderSize(io.NewSectionReader(s.file, 0, size), replayBufferSize),
+		segNum: s.num,
 		offset: 0,
 	}
 }
 
 // next reads and decodes the next record, returning its position. It returns
-// io.EOF at the clean end of the log, io.ErrUnexpectedEOF for a torn trailing
+// io.EOF at the clean end of the segment, io.ErrUnexpectedEOF for a torn trailing
 // record (a crash between append and fsync), and ErrChecksumMismatch for a
 // corrupt record.
 func (r *logReader) next() (LogPos, *Event, error) {
-	pos := MakeLogPos(0, uint32(r.offset))
+	pos := MakeLogPos(r.segNum, uint32(r.offset))
 
 	var header [4]byte
 	if _, err := io.ReadFull(r.br, header[:]); err != nil {

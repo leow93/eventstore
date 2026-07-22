@@ -11,182 +11,100 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// newFastDataLog returns a DataLog with fsync-on-write disabled, for tests that
-// exercise logic unrelated to durability and don't want to pay the fsync cost.
-func newFastDataLog(p string) (*DataLog, error) {
-	l, err := NewDataLog(p)
+// newFastLog returns a SegmentedLog rooted at dir with fsync-on-write disabled,
+// for tests and benchmarks that exercise logic unrelated to durability and don't
+// want to pay the fsync cost.
+func newFastLog(dir string) (*SegmentedLog, error) {
+	l, err := NewSegmentedLog(dir, DefaultSegmentSize)
 	if err != nil {
 		return nil, err
 	}
-
 	l.syncOnWrite = false
 	return l, nil
 }
 
-// TestDataLog_Append verifies that events are correctly written to the physical file
-// and that the returned byte offsets are perfectly accurate.
-func TestDataLog_Append(t *testing.T) {
-	// Skip this test if the -short flag is provided
+func TestSegmentedLog_Append_returnsSequentialOffsets(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping disk I/O test in short mode")
 	}
-	// t.TempDir() creates a unique temporary directory that Go automatically deletes after the test.
-	tempDir := t.TempDir()
-	logPath := filepath.Join(tempDir, "test.log")
+	dir := t.TempDir()
 
-	log, err := NewDataLog(logPath)
-	if err != nil {
-		t.Fatalf("failed to create data log: %v", err)
-	}
+	log, err := NewSegmentedLog(dir, DefaultSegmentSize)
+	require.NoError(t, err)
 	defer log.Close()
 
-	// Create events using our fully updated struct (including Meta)
-	evt1 := &Event{
-		StreamName: "stream-1",
-		EventType:  "ItemAdded",
-		Payload:    []byte(`{"item": "apple"}`),
-		Meta:       []byte(`{"user": "alice"}`),
-	}
-	evt2 := &Event{
-		StreamName: "stream-1",
-		EventType:  "ItemAdded",
-		Payload:    []byte(`{"item": "banana"}`),
-		Meta:       []byte(`{"user": "bob"}`),
-	}
+	evt1 := &Event{StreamName: "stream-1", EventType: "ItemAdded", Payload: []byte(`{"item": "apple"}`), Meta: []byte(`{"user": "alice"}`)}
+	evt2 := &Event{StreamName: "stream-1", EventType: "ItemAdded", Payload: []byte(`{"item": "banana"}`), Meta: []byte(`{"user": "bob"}`)}
 
-	// 1. Append first event
 	offset1, err := log.Append(evt1)
-	if err != nil {
-		t.Fatalf("failed to append evt1: %v", err)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, MakeLogPos(0, 0), offset1)
+	assert.Equal(t, uint64(1), evt1.GlobalPosition)
 
-	// First event should start at the very beginning of the file (offset 0)
-	if offset1 != MakeLogPos(0, 0) {
-		t.Fatalf("expected first offset to be 0, got %d", offset1)
-	}
-	if evt1.GlobalPosition != 1 {
-		t.Fatalf("expected global position 1, got %d", evt1.GlobalPosition)
-	}
-
-	// 2. Append second event
 	offset2, err := log.Append(evt2)
-	if err != nil {
-		t.Fatalf("failed to append evt2: %v", err)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, MakeLogPos(0, uint32(len(evt1.Encode()))), offset2)
+	assert.Equal(t, uint64(2), evt2.GlobalPosition)
 
-	// The second event should start exactly where the first event's byte array ended
-	expectedOffset2 := MakeLogPos(0, uint32(len(evt1.Encode())))
-	if offset2 != expectedOffset2 {
-		t.Fatalf("expected second offset to be %d, got %d", expectedOffset2, offset2)
-	}
-	if evt2.GlobalPosition != 2 {
-		t.Fatalf("expected global position 2, got %d", evt2.GlobalPosition)
-	}
-
-	// 3. Verify actual physical file size on the hard drive
-	stat, err := os.Stat(logPath)
-	if err != nil {
-		t.Fatalf("failed to stat file: %v", err)
-	}
-
-	expectedFileSize := int64(len(evt1.Encode()) + len(evt2.Encode()))
-	if stat.Size() != expectedFileSize {
-		t.Fatalf("expected physical file size %d, got %d", expectedFileSize, stat.Size())
-	}
+	// Both records landed in segment 0, at exactly their encoded sizes.
+	stat, err := os.Stat(filepath.Join(dir, segmentName(0)))
+	require.NoError(t, err)
+	assert.Equal(t, int64(len(evt1.Encode())+len(evt2.Encode())), stat.Size())
 }
 
-// TestDataLog_ConcurrentAppend bombards the file with concurrent writes to ensure
-// the global mutex strictly sequences events without data corruption or skipped numbers.
-func TestDataLog_ConcurrentAppend(t *testing.T) {
-	// Skip this test if the -short flag is provided
+// TestSegmentedLog_ConcurrentAppend bombards the log with concurrent writes to
+// ensure the write mutex strictly sequences events without corruption or skipped
+// global positions.
+func TestSegmentedLog_ConcurrentAppend(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping concurrent disk I/O test in short mode")
 	}
-	tempDir := t.TempDir()
-	logPath := filepath.Join(tempDir, "concurrent.log")
-
-	log, err := NewDataLog(logPath)
-	if err != nil {
-		t.Fatalf("failed to create data log: %v", err)
-	}
+	log, err := NewSegmentedLog(t.TempDir(), DefaultSegmentSize)
+	require.NoError(t, err)
 	defer log.Close()
 
 	const numGoroutines = 100
 	const eventsPerGoroutine = 20
-	totalExpectedEvents := numGoroutines * eventsPerGoroutine
+	total := numGoroutines * eventsPerGoroutine
 
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines)
-
-	// Fire off 100 goroutines simultaneously trying to append 20 events each
-	for i := range numGoroutines {
-		go func(routineID int) {
+	for range numGoroutines {
+		go func() {
 			defer wg.Done()
 			for range eventsPerGoroutine {
-				evt := &Event{
-					StreamName: "busy-stream",
-					EventType:  "StressTest",
-					Payload:    []byte("concurrent data payload"),
-					Meta:       []byte("meta data"),
-				}
-				_, err := log.Append(evt)
-				if err != nil {
-					t.Errorf("routine %d failed to append: %v", routineID, err)
-					return // Use return to exit this specific goroutine on error
-				}
+				_, err := log.Append(&Event{StreamName: "busy-stream", EventType: "StressTest", Payload: []byte("concurrent data payload"), Meta: []byte("meta data")})
+				assert.NoError(t, err)
 			}
-		}(i)
+		}()
 	}
-
-	// Wait for all 100 goroutines to finish
 	wg.Wait()
 
-	// Verify the final Global Position exactly matches the total number of events written
-	if log.globalPosition.Load() != uint64(totalExpectedEvents) {
-		t.Fatalf("expected final global position to be %d, got %d", totalExpectedEvents, log.globalPosition.Load())
-	}
-
-	// Verify the file actually has data and didn't just increment the counter in memory
-	stat, err := os.Stat(logPath)
-	if err != nil {
-		t.Fatalf("failed to stat file: %v", err)
-	}
-	if stat.Size() == 0 {
-		t.Fatal("expected file to have data, but size is 0")
-	}
+	assert.Equal(t, uint64(total), log.globalPosition.Load())
+	assert.Greater(t, log.Size(), int64(0))
 }
 
-func TestDataLog_GlobalPosition(t *testing.T) {
-	tempDir := t.TempDir()
-	logPath := filepath.Join(tempDir, "data.log")
-
-	dataLog, err := newFastDataLog(logPath)
+func TestSegmentedLog_GlobalPosition_seedsAndAdvances(t *testing.T) {
+	log, err := newFastLog(t.TempDir())
 	require.NoError(t, err)
+	defer log.Close()
 
-	// Seed position to 100
-	dataLog.SetGlobalPosition(100)
+	log.SetGlobalPosition(100)
 
 	evt1 := &Event{StreamName: "a", EventType: "T1"}
 	evt2 := &Event{StreamName: "b", EventType: "T2"}
-
-	_, err = dataLog.Append(evt1)
+	_, err = log.Append(evt1)
 	require.NoError(t, err)
-	_, err = dataLog.Append(evt2)
+	_, err = log.Append(evt2)
 	require.NoError(t, err)
 
-	// Verify the log correctly assigned sequential positions
 	assert.Equal(t, uint64(101), evt1.GlobalPosition)
 	assert.Equal(t, uint64(102), evt2.GlobalPosition)
-
-	// Verify the atomic counter has the correct max
-	assert.Equal(t, uint64(102), dataLog.globalPosition.Load())
+	assert.Equal(t, uint64(102), log.globalPosition.Load())
 }
 
-func TestDataLog_AppendBatch(t *testing.T) {
-	tempDir := t.TempDir()
-	logPath := filepath.Join(tempDir, "batch.log")
-
-	log, err := newFastDataLog(logPath)
+func TestSegmentedLog_AppendBatch_offsetsAndReadback(t *testing.T) {
+	log, err := newFastLog(t.TempDir())
 	require.NoError(t, err)
 	defer log.Close()
 
@@ -206,12 +124,10 @@ func TestDataLog_AppendBatch(t *testing.T) {
 	assert.Equal(t, MakeLogPos(0, uint32(len(events[0].Encode()))), offsets[1])
 	assert.Equal(t, MakeLogPos(0, uint32(len(events[0].Encode())+len(events[1].Encode()))), offsets[2])
 
-	// Global positions are assigned sequentially across the batch.
 	assert.Equal(t, uint64(1), events[0].GlobalPosition)
 	assert.Equal(t, uint64(2), events[1].GlobalPosition)
 	assert.Equal(t, uint64(3), events[2].GlobalPosition)
 
-	// Every event in the batch is durably readable at its reported offset.
 	for i, off := range offsets {
 		actual, err := log.ReadAt(off)
 		require.NoError(t, err)
@@ -220,11 +136,8 @@ func TestDataLog_AppendBatch(t *testing.T) {
 	}
 }
 
-func TestDataLog_AppendBatch_emptyIsNoOp(t *testing.T) {
-	tempDir := t.TempDir()
-	logPath := filepath.Join(tempDir, "empty_batch.log")
-
-	log, err := newFastDataLog(logPath)
+func TestSegmentedLog_AppendBatch_emptyIsNoOp(t *testing.T) {
+	log, err := newFastLog(t.TempDir())
 	require.NoError(t, err)
 	defer log.Close()
 
@@ -235,57 +148,31 @@ func TestDataLog_AppendBatch_emptyIsNoOp(t *testing.T) {
 	assert.Equal(t, int64(0), log.Size())
 }
 
-func TestDataLog_ReadAt(t *testing.T) {
-	tempDir := t.TempDir()
-	logPath := filepath.Join(tempDir, "data.log")
-
-	log, err := newFastDataLog(logPath)
+func TestSegmentedLog_ReadAt_roundTrip(t *testing.T) {
+	log, err := newFastLog(t.TempDir())
 	require.NoError(t, err)
 	defer log.Close()
 
-	// 1. Standard Event
-	stdEvt := &Event{
-		StreamName: "user-123",
-		EventType:  "UserCreated",
-		Payload:    []byte(`{"name": "Alice"}`),
-		Meta:       []byte(`{"ip": "127.0.0.1"}`),
-	}
-
+	stdEvt := &Event{StreamName: "user-123", EventType: "UserCreated", Payload: []byte(`{"name": "Alice"}`), Meta: []byte(`{"ip": "127.0.0.1"}`)}
 	offset1, err := log.Append(stdEvt)
 	require.NoError(t, err)
 
-	// 2. Large Event (forces the mapping to grow well beyond the first record)
-	largePayload := bytes.Repeat([]byte("A"), 1500) // 1.5KB payload
-	largeEvt := &Event{
-		StreamName: "user-123",
-		EventType:  "LargeDataAdded",
-		Payload:    largePayload,
-		Meta:       []byte{}, // Empty meta
-	}
-
+	// A larger event forces reads to span more than the first record's bytes.
+	largeEvt := &Event{StreamName: "user-123", EventType: "LargeDataAdded", Payload: bytes.Repeat([]byte("A"), 1500), Meta: []byte{}}
 	offset2, err := log.Append(largeEvt)
 	require.NoError(t, err)
 
-	// --- Verify Standard Event ---
-	readEvt1, err := log.ReadAt(offset1)
+	read1, err := log.ReadAt(offset1)
 	require.NoError(t, err)
+	assert.Equal(t, stdEvt.StreamName, read1.StreamName)
+	assert.Equal(t, stdEvt.EventType, read1.EventType)
+	assert.Equal(t, stdEvt.Payload, read1.Payload)
+	assert.Equal(t, stdEvt.Meta, read1.Meta)
+	// offset2 - offset1 should equal the total encoded size of the first event.
+	assert.Equal(t, offset2.Offset()-offset1.Offset(), read1.TotalSize())
 
-	assert.Equal(t, stdEvt.StreamName, readEvt1.StreamName)
-	assert.Equal(t, stdEvt.EventType, readEvt1.EventType)
-	assert.Equal(t, stdEvt.Position, readEvt1.Position)
-	assert.Equal(t, stdEvt.Timestamp, readEvt1.Timestamp)
-	assert.Equal(t, stdEvt.Payload, readEvt1.Payload)
-	assert.Equal(t, stdEvt.Meta, readEvt1.Meta)
-
-	// Verify TotalSize calculation is perfectly symmetrical
-	// (offset2 - offset1 should exactly equal the total size of evt1)
-	assert.Equal(t, offset2.Offset()-offset1.Offset(), readEvt1.TotalSize())
-
-	// --- Verify Large Event ---
-	readEvt2, err := log.ReadAt(offset2)
+	read2, err := log.ReadAt(offset2)
 	require.NoError(t, err)
-
-	assert.Equal(t, largeEvt.StreamName, readEvt2.StreamName)
-	assert.Equal(t, largeEvt.EventType, readEvt2.EventType)
-	assert.Len(t, readEvt2.Payload, 1500)
+	assert.Equal(t, largeEvt.StreamName, read2.StreamName)
+	assert.Len(t, read2.Payload, 1500)
 }

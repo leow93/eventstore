@@ -2,15 +2,14 @@ package eventstore
 
 import (
 	"bytes"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestDataLog_ReadAt_recordLargerThanReadAhead(t *testing.T) {
-	log, err := newFastDataLog(filepath.Join(t.TempDir(), "large.log"))
+func TestSegmentedLog_ReadAt_recordLargerThanReadAhead(t *testing.T) {
+	log, err := newFastLog(t.TempDir())
 	require.NoError(t, err)
 	defer log.Close()
 
@@ -30,8 +29,8 @@ func TestDataLog_ReadAt_recordLargerThanReadAhead(t *testing.T) {
 	assert.Equal(t, expected.Payload, actual.Payload)
 }
 
-func TestDataLog_ReadAt_seesRecordsAppendedLater(t *testing.T) {
-	log, err := newFastDataLog(filepath.Join(t.TempDir(), "grow.log"))
+func TestSegmentedLog_ReadAt_seesRecordsAppendedLater(t *testing.T) {
+	log, err := newFastLog(t.TempDir())
 	require.NoError(t, err)
 	defer log.Close()
 
@@ -53,8 +52,8 @@ func TestDataLog_ReadAt_seesRecordsAppendedLater(t *testing.T) {
 	assert.Equal(t, "Second", second.EventType)
 }
 
-func TestDataLog_ReadAt_rejectsOffsetBeyondSize(t *testing.T) {
-	log, err := newFastDataLog(filepath.Join(t.TempDir(), "bounds.log"))
+func TestSegmentedLog_ReadAt_rejectsOffsetBeyondSize(t *testing.T) {
+	log, err := newFastLog(t.TempDir())
 	require.NoError(t, err)
 	defer log.Close()
 
@@ -66,15 +65,15 @@ func TestDataLog_ReadAt_rejectsOffsetBeyondSize(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestDataLog_ReadAt_rejectsUnknownSegment(t *testing.T) {
-	log, err := newFastDataLog(filepath.Join(t.TempDir(), "segment.log"))
+func TestSegmentedLog_ReadAt_rejectsUnknownSegment(t *testing.T) {
+	log, err := newFastLog(t.TempDir())
 	require.NoError(t, err)
 	defer log.Close()
 
 	pos, err := log.Append(&Event{StreamName: "s-1", EventType: "Only", Payload: []byte("x")})
 	require.NoError(t, err)
 
-	// There is only segment 0 today; anything else must be rejected.
+	// Only segment 0 exists; a higher segment number must be rejected.
 	_, err = log.ReadAt(MakeLogPos(1, pos.Offset()))
 
 	require.Error(t, err)

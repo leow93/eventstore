@@ -1,8 +1,14 @@
 package eventstore
 
 import (
+	"errors"
 	"fmt"
+	"io"
+	"log"
 	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -12,53 +18,135 @@ import (
 // write buffer; the buffer grows as needed, so the exact value is not important.
 const optimisticEventSize = 256
 
-// DataLog represents the append-only physical file on disk.
+// DefaultSegmentSize is the target size at which the active segment rolls over to
+// a new one. It is a soft target: a single batch larger than this still lands in
+// one segment (bounded only by MaxSegmentSize).
+const DefaultSegmentSize int64 = 256 << 20 // 256 MiB
+
+// legacyLogName is the pre-segmentation single-file log; it is adopted as
+// segment 0 on first open (see doc/adr/0012).
+const legacyLogName = "events.log"
+
+// SegmentedLog is the append-only event log, split across numbered fixed-size
+// segment files. Exactly one segment is active (append + fsync); the rest are
+// sealed and immutable. It is the single source of truth (doc/adr/0001, 0012).
 //
-// Writes go through the file descriptor (append + fsync), serialised by writeMu.
-// Reads are served with pread (see read.go): they only read the atomic size and
-// never take writeMu, so a read never blocks on an in-flight append or its fsync.
-type DataLog struct {
-	writeMu        sync.Mutex // Serialises appends. Reads do not take it.
-	file           *os.File
-	size           atomic.Int64 // Current durable file size; the upper bound for reads.
+// Writes are serialised by writeMu and assign each event's GlobalPosition. Reads
+// take only a brief RLock to resolve a segment pointer, then pread lock-free, so a
+// read never blocks on an in-flight append or its fsync — only on the rare
+// roll-over that adds a segment.
+type SegmentedLog struct {
+	dir         string
+	maxSize     int64
+	syncOnWrite bool // fsync on each append; on by default, off for benchmarking
+
+	writeMu        sync.Mutex // serialises appends and roll-over
 	globalPosition atomic.Uint64
-	syncOnWrite    bool // Whether to fsync on each write. On by default; an option for benchmarking.
+
+	mu       sync.RWMutex // guards segments and active against roll-over
+	segments map[uint32]*Segment
+	active   *Segment
 }
 
-func NewDataLog(filepath string) (*DataLog, error) {
-	// os.O_APPEND: Force all writes to the end of the file
-	// os.O_CREATE: Create the file if it doesn't exist
-	// os.O_RDWR: reads (pread) and writes (append) share one descriptor
-	flags := os.O_APPEND | os.O_CREATE | os.O_RDWR
-
-	file, err := os.OpenFile(filepath, flags, 0o644)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open data log: %w", err)
+// NewSegmentedLog opens (or creates) the log rooted at dir, rolling over at
+// maxSize (clamped to a sane range; 0 selects the default). A legacy single-file
+// log is adopted as segment 0.
+func NewSegmentedLog(dir string, maxSize int64) (*SegmentedLog, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("create log dir: %w", err)
+	}
+	if maxSize <= 0 || maxSize > MaxSegmentSize {
+		maxSize = DefaultSegmentSize
 	}
 
-	// Get current file size so we know where we are appending.
-	stat, err := file.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("failed to stat data log: %w", err)
+	if err := migrateLegacyLog(dir); err != nil {
+		return nil, err
 	}
 
-	l := &DataLog{
-		file:        file,
+	nums, err := discoverSegments(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	l := &SegmentedLog{
+		dir:         dir,
+		maxSize:     maxSize,
 		syncOnWrite: true,
+		segments:    make(map[uint32]*Segment),
 	}
-	l.size.Store(stat.Size())
+
+	if len(nums) == 0 {
+		// Fresh log: create segment 0 as the active segment.
+		seg, err := openSegment(dir, 0)
+		if err != nil {
+			return nil, err
+		}
+		l.segments[0] = seg
+		l.active = seg
+		return l, nil
+	}
+
+	for _, n := range nums {
+		seg, err := openSegment(dir, n)
+		if err != nil {
+			_ = l.Close()
+			return nil, err
+		}
+		l.segments[n] = seg
+	}
+	// The highest-numbered segment is active; every earlier one is sealed.
+	for _, n := range nums[:len(nums)-1] {
+		l.segments[n].sealed = true
+	}
+	l.active = l.segments[nums[len(nums)-1]]
 	return l, nil
 }
 
-func (l *DataLog) SetGlobalPosition(gp uint64) {
-	l.globalPosition.Store(gp)
+// migrateLegacyLog adopts a pre-segmentation events.log as segment 0, but only if
+// no segment files exist yet.
+func migrateLegacyLog(dir string) error {
+	legacy := filepath.Join(dir, legacyLogName)
+	if _, err := os.Stat(legacy); err != nil {
+		return nil // no legacy file
+	}
+	nums, err := discoverSegments(dir)
+	if err != nil {
+		return err
+	}
+	if len(nums) > 0 {
+		return nil // already segmented; leave the legacy file in place
+	}
+	if err := os.Rename(legacy, filepath.Join(dir, segmentName(0))); err != nil {
+		return fmt.Errorf("migrate legacy log: %w", err)
+	}
+	return nil
 }
 
-func (l *DataLog) GetGlobalPosition() uint64 {
-	return l.globalPosition.Load()
+// discoverSegments returns the numbers of the NNNNNN.seg files in dir, ascending.
+func discoverSegments(dir string) ([]uint32, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read log dir: %w", err)
+	}
+	var nums []uint32
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), segmentFileSuffix) {
+			continue
+		}
+		var n uint32
+		if _, err := fmt.Sscanf(strings.TrimSuffix(e.Name(), segmentFileSuffix), "%d", &n); err != nil {
+			continue // ignore anything not named NNNNNN.seg
+		}
+		nums = append(nums, n)
+	}
+	slices.Sort(nums)
+	return nums, nil
 }
 
-func (l *DataLog) Append(event *Event) (LogPos, error) {
+func (l *SegmentedLog) SetGlobalPosition(gp uint64) { l.globalPosition.Store(gp) }
+func (l *SegmentedLog) GetGlobalPosition() uint64   { return l.globalPosition.Load() }
+
+func (l *SegmentedLog) Append(event *Event) (LogPos, error) {
 	positions, err := l.AppendBatch([]*Event{event})
 	if err != nil {
 		return 0, err
@@ -66,12 +154,12 @@ func (l *DataLog) Append(event *Event) (LogPos, error) {
 	return positions[0], nil
 }
 
-// AppendBatch appends a batch of events with a single fsync for the whole batch,
-// returning the byte offset of each event. fsync is a barrier: once it returns,
-// every write that preceded it is durable, so one sync at the end gives the whole
-// batch the same durability guarantee as syncing each event individually — but
-// pays the (dominant) fsync cost once instead of len(events) times.
-func (l *DataLog) AppendBatch(events []*Event) ([]LogPos, error) {
+// AppendBatch appends a batch of events with a single fsync, returning each
+// event's position. A batch is never split across segments: if it would push the
+// active segment past maxSize, the log rolls over to a fresh segment first. fsync
+// is a barrier, so one sync per batch gives the whole batch the same durability as
+// syncing each event, at the (dominant) fsync cost paid once.
+func (l *SegmentedLog) AppendBatch(events []*Event) ([]LogPos, error) {
 	if len(events) == 0 {
 		return nil, nil
 	}
@@ -79,62 +167,138 @@ func (l *DataLog) AppendBatch(events []*Event) ([]LogPos, error) {
 	l.writeMu.Lock()
 	defer l.writeMu.Unlock()
 
-	positions := make([]LogPos, len(events))
-	cursor := l.size.Load()
+	// Encode the whole batch, assigning each event its global position and noting
+	// where each record starts within the buffer.
 	buf := make([]byte, 0, len(events)*optimisticEventSize)
-
+	intra := make([]int64, len(events))
 	for i, event := range events {
 		if event.Timestamp == 0 {
 			event.Timestamp = uint64(time.Now().UnixNano())
 		}
 		event.GlobalPosition = l.globalPosition.Add(1)
-
-		// Single-segment log: every record lives in segment 0. When the log is
-		// split into segments (doc/adr/0001), this is where an over-full segment
-		// rolls over to the next one.
-		if cursor >= MaxSegmentSize {
-			return nil, fmt.Errorf("data log: offset %d exceeds max segment size %d", cursor, MaxSegmentSize)
-		}
-		positions[i] = MakeLogPos(0, uint32(cursor))
-		data := event.Encode()
-		buf = append(buf, data...)
-		cursor += int64(len(data))
+		intra[i] = int64(len(buf))
+		buf = append(buf, event.Encode()...)
 	}
 
-	// A nil error from Write guarantees the whole buffer was written, so cursor
-	// (start size + every encoded record) is the new file size.
-	if _, err := l.file.Write(buf); err != nil {
-		return nil, fmt.Errorf("failed to write batch to data log: %w", err)
+	if int64(len(buf)) > MaxSegmentSize {
+		return nil, fmt.Errorf("append: batch of %d bytes exceeds max segment size %d", len(buf), MaxSegmentSize)
 	}
 
-	if l.syncOnWrite {
-		if err := l.file.Sync(); err != nil {
-			return nil, fmt.Errorf("failed to sync to disk: %w", err)
+	// Only l.active is mutated by roll-over, and only from here under writeMu, so
+	// reading it unlocked is safe.
+	active := l.active
+	if active.size.Load() > 0 && active.size.Load()+int64(len(buf)) > l.maxSize {
+		var err error
+		if active, err = l.rollOver(); err != nil {
+			return nil, err
 		}
 	}
 
-	// Publish the new size only after the bytes are durable (and readable): a
-	// reader that observes the size can safely pread everything below it.
-	l.size.Store(cursor)
+	start, err := active.append(buf, l.syncOnWrite)
+	if err != nil {
+		return nil, err
+	}
 
+	positions := make([]LogPos, len(events))
+	for i := range events {
+		positions[i] = MakeLogPos(active.num, uint32(start+intra[i]))
+	}
 	return positions, nil
 }
 
-// ReadAt reads a single event at the given position with pread. It never takes
-// writeMu: it reads the atomic size as an upper bound and reads the record via
-// the file descriptor, so reads do not contend with in-flight appends.
-func (l *DataLog) ReadAt(pos LogPos) (*Event, error) {
-	if pos.Segment() != 0 {
-		return nil, fmt.Errorf("data log: segment %d does not exist (single-segment log)", pos.Segment())
+// rollOver seals the active segment and opens the next one. Called under writeMu.
+func (l *SegmentedLog) rollOver() (*Segment, error) {
+	if err := l.active.seal(); err != nil {
+		return nil, err
 	}
-	return readRecordAt(l.file, int64(pos.Offset()), l.size.Load())
+	next, err := openSegment(l.dir, l.active.num+1)
+	if err != nil {
+		return nil, err
+	}
+	l.mu.Lock()
+	l.segments[next.num] = next
+	l.active = next
+	l.mu.Unlock()
+	return next, nil
 }
 
-func (l *DataLog) Size() int64 {
-	return l.size.Load()
+// ReadAt reads a single event at the given position. It resolves the segment
+// under a brief RLock, then preads lock-free.
+func (l *SegmentedLog) ReadAt(pos LogPos) (*Event, error) {
+	l.mu.RLock()
+	seg := l.segments[pos.Segment()]
+	l.mu.RUnlock()
+	if seg == nil {
+		return nil, fmt.Errorf("read: unknown segment %d", pos.Segment())
+	}
+	return seg.readAt(int64(pos.Offset()))
 }
 
-// Close shuts down the underlying file.
-func (l *DataLog) Close() error {
-	return l.file.Close()
+// Size returns the total durable bytes across all segments.
+func (l *SegmentedLog) Size() int64 {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	var total int64
+	for _, s := range l.segments {
+		total += s.size.Load()
+	}
+	return total
+}
+
+// replay calls fn for every record in the log, in global (segment then offset)
+// order, decoding each segment sequentially in large buffered chunks. A torn
+// trailing record in the active segment ends replay cleanly (a crash between
+// append and fsync). A torn or corrupt record anywhere else is an error: sealed
+// segments were fsynced whole, so any decode failure in one is real corruption.
+func (l *SegmentedLog) replay(fn func(pos LogPos, evt *Event) error) error {
+	l.mu.RLock()
+	nums := make([]uint32, 0, len(l.segments))
+	for n := range l.segments {
+		nums = append(nums, n)
+	}
+	active := l.active
+	l.mu.RUnlock()
+	slices.Sort(nums)
+
+	for _, n := range nums {
+		l.mu.RLock()
+		seg := l.segments[n]
+		l.mu.RUnlock()
+
+		r := seg.newReader()
+		for {
+			pos, evt, err := r.next()
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					break // clean end of this segment
+				}
+				if errors.Is(err, ErrChecksumMismatch) {
+					return fmt.Errorf("replay: corruption in segment %d at offset %d: %w", n, pos.Offset(), err)
+				}
+				// A torn/short record is legitimate only as the active segment's tail.
+				if seg == active {
+					log.Printf("replay: torn tail in active segment %d at offset %d: %v", n, pos.Offset(), err)
+					return nil
+				}
+				return fmt.Errorf("replay: torn record in sealed segment %d at offset %d (corruption): %w", n, pos.Offset(), err)
+			}
+			if err := fn(pos, evt); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// Close closes every segment file.
+func (l *SegmentedLog) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var firstErr error
+	for _, s := range l.segments {
+		if err := s.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }

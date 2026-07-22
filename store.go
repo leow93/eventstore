@@ -4,8 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"iter"
-	"os"
-	"path/filepath"
 	"sync"
 )
 
@@ -36,7 +34,7 @@ func (e ErrWrongExpectedVersion) Error() string {
 // Store ties the append-only log together with the in-memory index to provide
 // optimistic-concurrency writes and ordered stream/category reads.
 type Store struct {
-	log   *DataLog
+	log   *SegmentedLog
 	index *Index
 
 	// writeMu serializes writers so the check-then-append critical section is
@@ -47,23 +45,19 @@ type Store struct {
 // Open opens (or creates) a store rooted at dir. It rebuilds the in-memory index
 // by replaying the log, and reseeds the log's global-position counter.
 func Open(dir string) (*Store, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("failed to create store directory: %w", err)
-	}
-
-	dataLog, err := NewDataLog(filepath.Join(dir, "events.log"))
+	segLog, err := NewSegmentedLog(dir, DefaultSegmentSize)
 	if err != nil {
 		return nil, err
 	}
 
 	index := NewIndex()
-	if err := index.Rebuild(dataLog); err != nil {
-		_ = dataLog.Close()
+	if err := index.Rebuild(segLog); err != nil {
+		_ = segLog.Close()
 		return nil, fmt.Errorf("failed to rebuild index: %w", err)
 	}
-	dataLog.SetGlobalPosition(index.MaxGlobalPosition())
+	segLog.SetGlobalPosition(index.MaxGlobalPosition())
 
-	return &Store{log: dataLog, index: index}, nil
+	return &Store{log: segLog, index: index}, nil
 }
 
 func (s *Store) Close() error {
@@ -111,6 +105,19 @@ func (s *Store) AppendToStream(streamName string, expected ExpectedVersion, even
 
 	return current + uint64(len(events)), nil
 }
+
+// Streams returns the names of every stream in the store, sorted. It is intended
+// for administrative browsing (e.g. the web console), not the hot read path.
+func (s *Store) Streams() []string { return s.index.Streams() }
+
+// Categories returns the names of every category in the store, sorted.
+func (s *Store) Categories() []string { return s.index.Categories() }
+
+// StreamLen returns the number of events in a stream.
+func (s *Store) StreamLen(stream string) int { return s.index.StreamLen(stream) }
+
+// CategoryLen returns the number of events in a category.
+func (s *Store) CategoryLen(category string) int { return s.index.CategoryLen(category) }
 
 // ReadStreamForwards reads a stream in ascending position order, starting at the
 // inclusive 1-based position from (0 or 1 both mean "from the start"). A limit of

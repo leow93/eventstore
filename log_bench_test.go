@@ -1,16 +1,15 @@
 package eventstore
 
 import (
-	"path/filepath"
 	"testing"
 )
 
-// BenchmarkDataLog_ReadAt measures random single-record reads via pread over a
-// warm log.
-func BenchmarkDataLog_ReadAt(b *testing.B) {
+// BenchmarkSegmentedLog_ReadAt measures random single-record reads via pread over
+// a warm log.
+func BenchmarkSegmentedLog_ReadAt(b *testing.B) {
 	const n = 10_000
 
-	log, err := newFastDataLog(filepath.Join(b.TempDir(), "read.log"))
+	log, err := newFastLog(b.TempDir())
 	if err != nil {
 		b.Fatalf("failed to create log: %v", err)
 	}
@@ -38,7 +37,7 @@ func BenchmarkDataLog_ReadAt(b *testing.B) {
 	}
 }
 
-func BenchmarkDataLog_Append(b *testing.B) {
+func BenchmarkSegmentedLog_Append(b *testing.B) {
 	evt := &Event{
 		StreamName: "benchmark-stream",
 		EventType:  "TestFired",
@@ -47,11 +46,8 @@ func BenchmarkDataLog_Append(b *testing.B) {
 	}
 
 	b.Run("WithSync", func(b *testing.B) {
-		tempDir := b.TempDir()
-		logPath := filepath.Join(tempDir, "sync.log")
-
 		// Enable syncOnWrite (the default)
-		log, err := NewDataLog(logPath)
+		log, err := NewSegmentedLog(b.TempDir(), DefaultSegmentSize)
 		if err != nil {
 			b.Fatalf("failed to create log: %v", err)
 		}
@@ -66,11 +62,8 @@ func BenchmarkDataLog_Append(b *testing.B) {
 	})
 
 	b.Run("WithoutSync", func(b *testing.B) {
-		tempDir := b.TempDir()
-		logPath := filepath.Join(tempDir, "nosync.log")
-
 		// Disable syncOnWrite (relies on OS page cache)
-		log, err := NewDataLog(logPath)
+		log, err := NewSegmentedLog(b.TempDir(), DefaultSegmentSize)
 		if err != nil {
 			b.Fatalf("failed to create log: %v", err)
 		}
@@ -86,9 +79,9 @@ func BenchmarkDataLog_Append(b *testing.B) {
 	})
 }
 
-// BenchmarkDataLog_Batch10 compares writing a 10-event batch as ten individual
-// appends (ten fsyncs) versus one AppendBatch call (a single fsync).
-func BenchmarkDataLog_Batch10(b *testing.B) {
+// BenchmarkSegmentedLog_Batch10 compares writing a 10-event batch as ten
+// individual appends (ten fsyncs) versus one AppendBatch call (a single fsync).
+func BenchmarkSegmentedLog_Batch10(b *testing.B) {
 	const batchSize = 10
 
 	makeBatch := func() []*Event {
@@ -105,7 +98,7 @@ func BenchmarkDataLog_Batch10(b *testing.B) {
 	}
 
 	b.Run("TenIndividualAppends", func(b *testing.B) {
-		log, err := NewDataLog(filepath.Join(b.TempDir(), "loop.log"))
+		log, err := NewSegmentedLog(b.TempDir(), DefaultSegmentSize)
 		if err != nil {
 			b.Fatalf("failed to create log: %v", err)
 		}
@@ -122,7 +115,7 @@ func BenchmarkDataLog_Batch10(b *testing.B) {
 	})
 
 	b.Run("OneBatchAppend", func(b *testing.B) {
-		log, err := NewDataLog(filepath.Join(b.TempDir(), "batch.log"))
+		log, err := NewSegmentedLog(b.TempDir(), DefaultSegmentSize)
 		if err != nil {
 			b.Fatalf("failed to create log: %v", err)
 		}

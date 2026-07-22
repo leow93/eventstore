@@ -1,10 +1,7 @@
 package eventstore
 
 import (
-	"errors"
-	"fmt"
-	"io"
-	"log"
+	"sort"
 	"sync"
 )
 
@@ -85,6 +82,49 @@ func (idx *Index) CategoryOffsets(category string) []LogPos {
 	return cloneOffsets(idx.categories[category])
 }
 
+// Streams returns the names of every stream known to the index, sorted. It is
+// intended for administrative browsing rather than the hot path.
+func (idx *Index) Streams() []string {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	out := make([]string, 0, len(idx.streams))
+	for name := range idx.streams {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Categories returns the names of every category known to the index, sorted.
+func (idx *Index) Categories() []string {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	out := make([]string, 0, len(idx.categories))
+	for name := range idx.categories {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// StreamLen returns the number of events in a stream.
+func (idx *Index) StreamLen(stream string) int {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	return len(idx.streams[stream])
+}
+
+// CategoryLen returns the number of events in a category.
+func (idx *Index) CategoryLen(category string) int {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	return len(idx.categories[category])
+}
+
 // MaxGlobalPosition returns the highest global position applied to the index.
 func (idx *Index) MaxGlobalPosition() uint64 {
 	idx.mu.RLock()
@@ -93,36 +133,14 @@ func (idx *Index) MaxGlobalPosition() uint64 {
 	return idx.maxGlobalPosition
 }
 
-// Rebuild replays the log from the beginning, applying every complete event to
-// the index. A trailing partial record (a torn write left by a crash between
-// append and fsync) stops the scan cleanly rather than failing the boot.
-//
-// A per-record CRC lets Rebuild tell the two apart: a checksum mismatch means the
-// bytes of an otherwise-complete record were corrupted, which is unrecoverable and
-// fails the boot loudly; any other decode failure is treated as a torn tail and
-// stops the scan cleanly at that offset.
-func (idx *Index) Rebuild(dataLog *DataLog) error {
-	r := dataLog.newReader()
-
-	for {
-		pos, evt, err := r.next()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break // clean end of the log
-			}
-			if errors.Is(err, ErrChecksumMismatch) {
-				return fmt.Errorf("index rebuild: corruption at offset %d: %w", pos.Offset(), err)
-			}
-			// io.ErrUnexpectedEOF (or a decode failure): a torn trailing record.
-			log.Printf("index rebuild: stopping at offset %d (torn tail: %v)", pos.Offset(), err)
-			break
-		}
-		if err := idx.Apply(evt, pos); err != nil {
-			return err
-		}
-	}
-
-	return nil
+// Rebuild reconstructs the index by replaying the whole log, applying every
+// complete event. The log's replay enforces recovery policy: a torn trailing
+// record in the active segment ends the scan cleanly (a crash between append and
+// fsync), whereas corruption or a torn record in a sealed segment fails loudly.
+func (idx *Index) Rebuild(l *SegmentedLog) error {
+	return l.replay(func(pos LogPos, evt *Event) error {
+		return idx.Apply(evt, pos)
+	})
 }
 
 func cloneOffsets(src []LogPos) []LogPos {
