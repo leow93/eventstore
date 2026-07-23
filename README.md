@@ -123,13 +123,13 @@ server against a fresh/empty `-data` directory.
 writers=8 events/writer=5000 batch=100 payload=64B total=40000
 
 === WRITE ===
-  40000 events in 1.884s
-  throughput: 21232 events/sec  (400 Append calls)
-  Append latency: p50=34.982ms p99=135.099ms max=148.788ms
+  40000 events in 1.929s
+  throughput: 20734 events/sec  (400 Append calls)
+  Append latency: p50=36.596ms p99=118.867ms max=133.069ms
 
 === READ (category stream) ===
-  40000 events in 40ms
-  throughput: 999387 events/sec
+  40000 events in 123ms
+  throughput: 325275 events/sec
 ```
 
 ### Interpreting the numbers
@@ -144,7 +144,12 @@ batch, so larger batches amortise it. Rough numbers on an Apple M2 Pro:
 | 100      | ~21,000 events/s |
 | 1000     | ~180,000 events/s|
 
-Reads come straight from the log via `pread` and stream back at ~1M events/s.
+Reads are served with `pread`. Raw single-record reads run at **~900k reads/s**
+(~1.1 µs each; `go test -bench BenchmarkSegmentedLog_ReadAt`), and streaming a whole
+category back over gRPC lands around **~330k events/s** (the READ figure above).
+Both on an Apple M2 Pro. That's a deliberate ~10× step down from the zero-copy mmap
+`pread` replaced — traded for robustness (no SIGBUS, no reader/writer lock
+contention); see [ADR 0013](doc/adr/0013-chunked-pread-reads.md).
 
 ## Development
 
