@@ -24,7 +24,12 @@ func main() {
 	batch := flag.Int("batch", 1, "events per Append call")
 	payloadSize := flag.Int("payload", 64, "payload size in bytes")
 	prefix := flag.String("prefix", "loadtest", "stream/category prefix (use a fresh value per run to avoid OCC conflicts)")
+	categories := flag.Int("categories", 1, "number of categories to spread writers across")
 	flag.Parse()
+
+	if *categories < 1 {
+		log.Fatalf("categories must be >= 1, got %d", *categories)
+	}
 
 	conn, err := grpc.NewClient(*addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -36,10 +41,12 @@ func main() {
 	payload := make([]byte, *payloadSize)
 	totalEvents := *writers * *events
 
-	fmt.Printf("writers=%d events/writer=%d batch=%d payload=%dB total=%d\n",
-		*writers, *events, *batch, *payloadSize, totalEvents)
+	fmt.Printf("writers=%d events/writer=%d batch=%d payload=%dB categories=%d total=%d\n",
+		*writers, *events, *batch, *payloadSize, *categories, totalEvents)
 
 	// --- Write phase ---
+	// Writers are spread round-robin across the categories. Each writer owns a
+	// distinct stream within its category, so writers never contend on version.
 	latencies := make([][]time.Duration, *writers)
 	var wg sync.WaitGroup
 	wg.Add(*writers)
@@ -48,7 +55,9 @@ func main() {
 	for w := 0; w < *writers; w++ {
 		go func(id int) {
 			defer wg.Done()
-			latencies[id] = runWriter(client, *prefix, id, *events, *batch, payload)
+			category := categoryName(*prefix, id%*categories, *categories)
+			stream := fmt.Sprintf("%s-%d", category, id)
+			latencies[id] = runWriter(client, stream, id, *events, *batch, payload)
 		}(w)
 	}
 	wg.Wait()
@@ -61,19 +70,31 @@ func main() {
 		float64(totalEvents)/writeElapsed.Seconds(), len(all))
 	printLatencies("  Append latency", all)
 
-	// --- Read phase: stream the whole category back ---
+	// --- Read phase: stream each category back ---
 	fmt.Println("\n=== READ (category stream) ===")
 	readStart := time.Now()
-	count := readCategory(client, *prefix)
+	count := 0
+	for c := 0; c < *categories; c++ {
+		count += readCategory(client, categoryName(*prefix, c, *categories))
+	}
 	readElapsed := time.Since(readStart)
-	fmt.Printf("  %d events in %s\n", count, readElapsed.Round(time.Millisecond))
+	fmt.Printf("  %d events across %d categories in %s\n", count, *categories, readElapsed.Round(time.Millisecond))
 	fmt.Printf("  throughput: %.0f events/sec\n", float64(count)/readElapsed.Seconds())
+}
+
+// categoryName returns the category for the given index. With a single category
+// the bare prefix is used (preserving the original single-category behaviour);
+// otherwise the index is appended so each category is distinct and dash-free.
+func categoryName(prefix string, idx, total int) string {
+	if total == 1 {
+		return prefix
+	}
+	return fmt.Sprintf("%s%d", prefix, idx)
 }
 
 // runWriter appends events to a single stream it owns, tracking its expected
 // version, and returns the per-Append latencies.
-func runWriter(client pb.EventStoreClient, prefix string, id, events, batch int, payload []byte) []time.Duration {
-	stream := fmt.Sprintf("%s-%d", prefix, id)
+func runWriter(client pb.EventStoreClient, stream string, id, events, batch int, payload []byte) []time.Duration {
 	var latencies []time.Duration
 	var version int64 // stream starts empty (version 0)
 
