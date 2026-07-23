@@ -27,7 +27,11 @@ go.work.sum
 # env file
 .env
 
-# data
+# build output
+/bin/
+
+# local event store data
+/data/
 
 # Editor/IDE
 # .idea/

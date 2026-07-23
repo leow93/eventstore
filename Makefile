@@ -1,4 +1,4 @@
-.PHONY: all fmt vet test test-full test-race test-full-race bench
+.PHONY: all fmt vet test test-full test-race test-full-race bench proto build run web loadtest
 
 # The default target runs the FAST tests
 all: fmt vet test-race
@@ -42,6 +42,36 @@ test-full-race:
 bench:
 	@echo "==> Running benchmarks..."
 	go test -bench=. -benchmem ./...
+
+## proto: Regenerate Go code from the .proto definitions (requires protoc + plugins)
+proto:
+	@echo "==> Generating protobuf/gRPC code..."
+	PATH="$$PATH:$$(go env GOPATH)/bin" protoc \
+		--go_out=. --go_opt=module=github.com/leow93/eventstore \
+		--go-grpc_out=. --go-grpc_opt=module=github.com/leow93/eventstore \
+		proto/eventstore.proto
+
+## build: Build the server and loadtest binaries into ./bin
+build:
+	@echo "==> Building binaries..."
+	go build -o bin/eventstored ./cmd/eventstored
+	go build -o bin/loadtest ./cmd/loadtest
+	go build -o bin/eventstore-web ./web
+
+## run: Run the gRPC server (ADDR and DATA are overridable)
+run:
+	go run ./cmd/eventstored -addr $(or $(ADDR),:50051) -data $(or $(DATA),./data)
+
+## web: Run the read-only web admin console (ADDR, DATA overridable; SEED=1 seeds demo data if empty)
+web:
+	go run ./web -addr $(or $(ADDR),:8080) -data $(or $(DATA),./data) $(if $(SEED),-seed,)
+
+## loadtest: Run the load-test client against a running server (see README for flags)
+loadtest:
+	go run ./cmd/loadtest -addr $(or $(ADDR),localhost:50051) \
+		-writers $(or $(WRITERS),8) -events $(or $(EVENTS),2000) \
+		-batch $(or $(BATCH),1) -payload $(or $(PAYLOAD),64) \
+		-prefix $(or $(PREFIX),loadtest)
 
 ## clean-local-data: removes local data
 clean-local-data:

@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package eventstore.v1;
+
+option go_package = "github.com/leow93/eventstore/eventstorepb;eventstorepb";
+
+// EventStore exposes the single-node event store over gRPC. Reads use
+// server-side streaming so large streams/categories are delivered incrementally.
+service EventStore {
+  // Append writes events to a stream under optimistic-concurrency control.
+  rpc Append(AppendRequest) returns (AppendResponse);
+
+  // ReadStream streams the events of a single stream, forwards or backwards.
+  rpc ReadStream(ReadStreamRequest) returns (stream Event);
+
+  // ReadCategory streams the events of a category in append order.
+  rpc ReadCategory(ReadCategoryRequest) returns (stream Event);
+}
+
+// Event is a stored event as returned by reads.
+message Event {
+  string stream_name = 1;
+  string event_type = 2;
+  uint64 position = 3;         // 1-based position within its stream
+  uint64 global_position = 4;  // position within the whole store
+  uint64 timestamp = 5;        // unix nanoseconds, assigned by the server
+  bytes payload = 6;
+  bytes meta = 7;
+}
+
+// NewEvent is the client-supplied part of an event. The server assigns position,
+// global position and (if unset) timestamp.
+message NewEvent {
+  string event_type = 1;
+  bytes payload = 2;
+  bytes meta = 3;
+}
+
+message AppendRequest {
+  string stream_name = 1;
+  // expected_version follows the store's OCC rules: -1 (AnyVersion) disables the
+  // check; a value >= 0 requires the stream's current version to equal it exactly
+  // (0 means the stream must not yet exist).
+  int64 expected_version = 2;
+  repeated NewEvent events = 3;
+}
+
+message AppendResponse {
+  uint64 version = 1;  // the stream's new version after the append
+}
+
+enum Direction {
+  DIRECTION_FORWARDS = 0;
+  DIRECTION_BACKWARDS = 1;
+}
+
+message ReadStreamRequest {
+  string stream_name = 1;
+  uint64 from = 2;   // inclusive 1-based position; 0 means "from the natural start"
+  int64 limit = 3;   // <= 0 means unbounded
+  Direction direction = 4;
+}
+
+message ReadCategoryRequest {
+  string category = 1;
+  uint64 from = 2;   // inclusive 1-based category-local position; 0 means "from the start"
+  int64 limit = 3;   // <= 0 means unbounded
+}
