@@ -1,8 +1,9 @@
 # eventstore
 
-A single-node, append-only event-sourcing store with optimistic concurrency,
+An event store with optimistic concurrency,
 ordered stream/category reads, and a gRPC API.
 
+## Current features 
 - **Durable log** — every write is appended to the active segment file and
   `fsync`ed; the log is split into fixed-size segment files (one active, the rest
   sealed and immutable).
@@ -13,6 +14,12 @@ ordered stream/category reads, and a gRPC API.
 - **gRPC API** — writes plus server-streaming reads.
 - **Web console** — a read-only admin UI (`web/`) for browsing streams and
   categories, reading a stream, and scrolling a category feed.
+
+## Features on the way
+- Snapshots 
+- Stream truncation + stream garbage collection (useful for GDPR)
+- Exposed metrics
+- Authentication + authorization
 
 ## Requirements
 
