@@ -29,7 +29,7 @@ func TestIndex_Apply_recordsStreamAndCategoryOffsets(t *testing.T) {
 	require.True(t, exists)
 	assert.Equal(t, uint64(2), version)
 
-	// The high-water global position tracks the maximum seen.
+	// The global position tracks the maximum seen.
 	assert.Equal(t, uint64(3), idx.MaxGlobalPosition())
 }
 

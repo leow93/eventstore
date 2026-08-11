@@ -34,7 +34,7 @@ func NewIndex() *Index {
 
 // Apply records a single event located at the given position in the log.
 // It appends the position to the event's stream and category, and advances the
-// high-water global position. It returns an error only if the stream name has
+// index max global position. It returns an error only if the stream name has
 // no extractable category.
 func (idx *Index) Apply(evt *Event, pos LogPos) error {
 	category, err := GetCategory(evt.StreamName)

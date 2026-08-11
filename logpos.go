@@ -6,8 +6,7 @@ package eventstore
 // (see doc/adr/0001).
 //
 // A 32-bit in-segment offset caps a single segment at 4 GiB; the segmented log
-// keeps segments well below that. Today there is a single segment (number 0), so
-// a LogPos is effectively just a byte offset into the one log file.
+// keeps segments well below that.
 type LogPos uint64
 
 // MaxSegmentSize is one past the largest addressable byte offset within a

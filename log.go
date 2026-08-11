@@ -24,11 +24,11 @@ const DefaultSegmentSize int64 = 256 << 20 // 256 MiB
 
 // SegmentedLog is the append-only event log, split across numbered fixed-size
 // segment files. Exactly one segment is active (append + fsync); the rest are
-// sealed and immutable. It is the single source of truth (doc/adr/0001, 0012).
+// sealed and immutable.
 //
 // Writes are serialised by writeMu and assign each event's GlobalPosition. Reads
 // take only a brief RLock to resolve a segment pointer, then pread lock-free, so a
-// read never blocks on an in-flight append or its fsync — only on the rare
+// read never blocks on an in-flight append or its fsync - only on the rare
 // roll-over that adds a segment.
 type SegmentedLog struct {
 	dir         string

@@ -49,9 +49,9 @@ type Event struct {
 // Meta (Variable bytes)
 // CRC (uint32 - 4 bytes) - CRC-32C over every preceding byte of the record
 //
-// The CRC is the last field so that a torn/short write fails the TotalLength-based
-// length check (recoverable — truncate the tail) while a bit-flip inside an
-// otherwise-complete record fails the CRC check (unrecoverable — fail loudly).
+// The CRC is the last field so that:
+// 1. A torn/short write fails the TotalLength-based length check. This can be recoverable by truncating the tail.
+// 2. A bit-flip inside an otherwise-complete record fails the CRC check. This it not recoverable and fails loudly.
 func (e *Event) Encode() []byte {
 	streamNameLen := uint16(len(e.StreamName))
 	eventTypeLen := uint16(len(e.EventType))
