@@ -6,7 +6,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -22,10 +21,6 @@ const optimisticEventSize = 256
 // a new one. It is a soft target: a single batch larger than this still lands in
 // one segment (bounded only by MaxSegmentSize).
 const DefaultSegmentSize int64 = 256 << 20 // 256 MiB
-
-// legacyLogName is the pre-segmentation single-file log; it is adopted as
-// segment 0 on first open (see doc/adr/0012).
-const legacyLogName = "events.log"
 
 // SegmentedLog is the append-only event log, split across numbered fixed-size
 // segment files. Exactly one segment is active (append + fsync); the rest are
@@ -49,18 +44,13 @@ type SegmentedLog struct {
 }
 
 // NewSegmentedLog opens (or creates) the log rooted at dir, rolling over at
-// maxSize (clamped to a sane range; 0 selects the default). A legacy single-file
-// log is adopted as segment 0.
+// maxSize (clamped to a sane range; 0 selects the default).
 func NewSegmentedLog(dir string, maxSize int64) (*SegmentedLog, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create log dir: %w", err)
 	}
 	if maxSize <= 0 || maxSize > MaxSegmentSize {
 		maxSize = DefaultSegmentSize
-	}
-
-	if err := migrateLegacyLog(dir); err != nil {
-		return nil, err
 	}
 
 	nums, err := discoverSegments(dir)
@@ -100,26 +90,6 @@ func NewSegmentedLog(dir string, maxSize int64) (*SegmentedLog, error) {
 	}
 	l.active = l.segments[nums[len(nums)-1]]
 	return l, nil
-}
-
-// migrateLegacyLog adopts a pre-segmentation events.log as segment 0, but only if
-// no segment files exist yet.
-func migrateLegacyLog(dir string) error {
-	legacy := filepath.Join(dir, legacyLogName)
-	if _, err := os.Stat(legacy); err != nil {
-		return nil // no legacy file
-	}
-	nums, err := discoverSegments(dir)
-	if err != nil {
-		return err
-	}
-	if len(nums) > 0 {
-		return nil // already segmented; leave the legacy file in place
-	}
-	if err := os.Rename(legacy, filepath.Join(dir, segmentName(0))); err != nil {
-		return fmt.Errorf("migrate legacy log: %w", err)
-	}
-	return nil
 }
 
 // discoverSegments returns the numbers of the NNNNNN.seg files in dir, ascending.

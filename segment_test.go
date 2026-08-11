@@ -2,8 +2,6 @@ package eventstore
 
 import (
 	"bytes"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -120,28 +118,4 @@ func TestSegmentedLog_ReplayReconstructsAcrossSegments(t *testing.T) {
 	version, ok := idx.StreamVersion("user-1")
 	require.True(t, ok)
 	assert.Equal(t, uint64(n), version)
-}
-
-func TestSegmentedLog_AdoptsLegacyEventsLog(t *testing.T) {
-	dir := t.TempDir()
-
-	// Simulate a pre-segmentation log: an events.log holding an encoded record.
-	evt := &Event{StreamName: "user-1", EventType: "Created", Payload: []byte("hi"), GlobalPosition: 1}
-	require.NoError(t, os.WriteFile(filepath.Join(dir, legacyLogName), evt.Encode(), 0o644))
-
-	log, err := NewSegmentedLog(dir, DefaultSegmentSize)
-	require.NoError(t, err)
-	defer log.Close()
-
-	// events.log was renamed to segment 0.
-	_, statErr := os.Stat(filepath.Join(dir, legacyLogName))
-	assert.True(t, os.IsNotExist(statErr), "legacy events.log should have been renamed")
-	_, statErr = os.Stat(filepath.Join(dir, segmentName(0)))
-	require.NoError(t, statErr)
-
-	// The record is readable at segment 0, offset 0.
-	actual, err := log.ReadAt(MakeLogPos(0, 0))
-	require.NoError(t, err)
-	assert.Equal(t, "Created", actual.EventType)
-	assert.Equal(t, []byte("hi"), actual.Payload)
 }

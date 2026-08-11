@@ -3,7 +3,8 @@
 An event store with optimistic concurrency,
 ordered stream/category reads, and a gRPC API.
 
-## Current features 
+## Current features
+
 - **Durable log** — every write is appended to the active segment file and
   `fsync`ed; the log is split into fixed-size segment files (one active, the rest
   sealed and immutable).
@@ -16,9 +17,11 @@ ordered stream/category reads, and a gRPC API.
   categories, reading a stream, and scrolling a category feed.
 
 ## Features on the way
-- Snapshots 
+
+- Snapshots
 - Stream truncation + stream garbage collection (useful for GDPR)
 - Exposed metrics
+- Faster index restoration on boot
 - Authentication + authorization
 
 ## Requirements
@@ -27,12 +30,14 @@ ordered stream/category reads, and a gRPC API.
 - To **regenerate** the gRPC code (only needed if you change `proto/eventstore.proto`):
   - `protoc` (e.g. `brew install protobuf`)
   - `protoc-gen-go` and `protoc-gen-go-grpc`:
+
     ```sh
     go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
     go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
     ```
-  The generated code (`eventstorepb/`) is committed, so you don't need `protoc`
-  just to build and run.
+
+    The generated code (`eventstorepb/`) is committed, so you don't need `protoc`
+    just to build and run.
 
 ## Running the server
 
@@ -49,10 +54,10 @@ make run ADDR=:6000 DATA=/tmp/es-data
 go run ./cmd/eventstored -addr :50051 -data ./data
 ```
 
-| Flag    | Default     | Description                             |
-| ------- | ----------- | --------------------------------------- |
-| `-addr` | `:50051`    | TCP address to listen on                |
-| `-data` | `./data`    | Directory for the event log (segment files) |
+| Flag    | Default  | Description                                 |
+| ------- | -------- | ------------------------------------------- |
+| `-addr` | `:50051` | TCP address to listen on                    |
+| `-data` | `./data` | Directory for the event log (segment files) |
 
 On boot the server replays the log's segment files to rebuild its in-memory
 indexes, so restarting against the same `-data` directory preserves all data. Stop
@@ -82,12 +87,12 @@ go run ./web -addr :8080 -data ./data -seed
 Then open <http://localhost:8080>. It can browse streams and categories, read a
 whole stream, and infinite-scroll a category feed.
 
-| Flag       | Default  | Description                                       |
-| ---------- | -------- | ------------------------------------------------- |
-| `-addr`    | `:8080`  | TCP address to listen on                          |
-| `-data`    | `./data` | Event store data directory                        |
+| Flag       | Default  | Description                                         |
+| ---------- | -------- | --------------------------------------------------- |
+| `-addr`    | `:8080`  | TCP address to listen on                            |
+| `-data`    | `./data` | Event store data directory                          |
 | `-seed`    | off      | Write demo events if the store is empty, then serve |
-| `-refresh` | `1s`     | Min interval between live-data checks (debounce)  |
+| `-refresh` | `1s`     | Min interval between live-data checks (debounce)    |
 
 Typical setup: run `eventstored` (the gRPC writer) and the web console against the
 same `-data` directory; the console follows the writer's appends on refresh.
@@ -107,14 +112,14 @@ make loadtest BATCH=100 EVENTS=5000
 go run ./cmd/loadtest -addr localhost:50051 -writers 8 -events 5000 -batch 100 -prefix run1
 ```
 
-| Flag       | Default          | Description                                                        |
-| ---------- | ---------------- | ------------------------------------------------------------------ |
-| `-addr`    | `localhost:50051`| Server address                                                     |
-| `-writers` | `8`              | Number of concurrent writers (each owns one stream)                |
-| `-events`  | `2000`           | Events appended per writer                                         |
-| `-batch`   | `1`              | Events per `Append` call (the key durability/throughput lever)     |
-| `-payload` | `64`             | Payload size in bytes                                              |
-| `-prefix`  | `loadtest`       | Stream/category prefix — **use a fresh value per run** (see below) |
+| Flag       | Default           | Description                                                        |
+| ---------- | ----------------- | ------------------------------------------------------------------ |
+| `-addr`    | `localhost:50051` | Server address                                                     |
+| `-writers` | `8`               | Number of concurrent writers (each owns one stream)                |
+| `-events`  | `2000`            | Events appended per writer                                         |
+| `-batch`   | `1`               | Events per `Append` call (the key durability/throughput lever)     |
+| `-payload` | `64`              | Payload size in bytes                                              |
+| `-prefix`  | `loadtest`        | Stream/category prefix — **use a fresh value per run** (see below) |
 
 ### Important: use a fresh `-prefix` per run
 
@@ -145,11 +150,11 @@ Writes are bounded by `fsync`: the store serializes writers and flushes to disk,
 so **batch size is the dominant throughput lever**. One `fsync` covers a whole
 batch, so larger batches amortise it. Rough numbers on an Apple M2 Pro:
 
-| `-batch` | write throughput |
-| -------- | ---------------- |
-| 1        | ~240 events/s    |
-| 100      | ~21,000 events/s |
-| 1000     | ~180,000 events/s|
+| `-batch` | write throughput  |
+| -------- | ----------------- |
+| 1        | ~240 events/s     |
+| 100      | ~21,000 events/s  |
+| 1000     | ~180,000 events/s |
 
 Reads are served with `pread`. Raw single-record reads run at **~900k reads/s**
 (~1.1 µs each; `go test -bench BenchmarkSegmentedLog_ReadAt`), and streaming a whole

@@ -48,8 +48,6 @@ segment 0.
 - Rebuild is `SegmentedLog.replay`: it scans each segment in order and enforces the
   recovery policy — a torn tail is tolerated only in the active (last) segment;
   a torn or corrupt record in a sealed segment fails loudly.
-- Migration: a pre-segmentation `events.log` is renamed to `000000.seg` on first
-  open (only when no `.seg` files exist yet).
 - **Deferred:** retention (`DropSegmentsBefore` + index pruning). Segmenting makes
   it a whole-file operation when wanted, but nothing needs it yet — event sourcing
   keeps everything, and the natural driver (Raft log compaction behind snapshots)
